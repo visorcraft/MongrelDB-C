@@ -356,6 +356,42 @@ static void fresh_table(const char *name, const mongreldb_column *cols, size_t n
     }
 }
 
+/* cell_i64 returns the int64 value for col_id in a result row's flat cells
+ * array, or 0 if absent. *found is set to 0/1. */
+static int64_t cell_i64(mongreldb_row row, int64_t col_id, int *found) {
+    if (found) {
+        *found = 0;
+    }
+    for (size_t i = 0; i < row.count; i++) {
+        if (row.cells[i].column_id == col_id &&
+            row.cells[i].value.tag == MDB_VAL_INT64) {
+            if (found) {
+                *found = 1;
+            }
+            return row.cells[i].value.v.i64;
+        }
+    }
+    return 0;
+}
+
+/* cell_f64 returns the double value for col_id in a result row's flat cells
+ * array, or 0.0 if absent. *found is set to 0/1. */
+static double cell_f64(mongreldb_row row, int64_t col_id, int *found) {
+    if (found) {
+        *found = 0;
+    }
+    for (size_t i = 0; i < row.count; i++) {
+        if (row.cells[i].column_id == col_id &&
+            row.cells[i].value.tag == MDB_VAL_DOUBLE) {
+            if (found) {
+                *found = 1;
+            }
+            return row.cells[i].value.v.f64;
+        }
+    }
+    return 0.0;
+}
+
 /* ── Tests ─────────────────────────────────────────────────────────────── */
 
 TEST(test_health) {
@@ -405,6 +441,23 @@ TEST(test_upsert) {
     int64_t n = -1;
     CHECK_RC(mongreldb_count(g_client, "c_upsert", &n));
     CHECK(n == 1, "expected 1 row after upsert, got %lld", (long long)n);
+
+    /* Query the row back and verify the updated value landed. */
+    mongreldb_condition cond;
+    memset(&cond, 0, sizeof(cond));
+    cond.kind = MDB_COND_PK;
+    cond.int_value = 1;
+    cond.int_set = 1;
+
+    mongreldb_result res;
+    int rc = mongreldb_query(g_client, "c_upsert", &cond, 1, NULL, 0, 0, &res);
+    CHECK_RC(rc);
+    CHECK(res.count == 1, "expected 1 row from pk query, got %zu", res.count);
+    int found = 0;
+    int64_t pk = cell_i64(res.rows[0], 1, &found);
+    CHECK(found && pk == 1, "expected returned pk 1, got %lld", (long long)pk);
+    double amt = cell_f64(res.rows[0], 2, &found);
+    CHECK(found && amt == 20.0, "expected updated amount 20.0, got %g", amt);
 }
 
 TEST(test_query_by_pk) {
@@ -427,6 +480,10 @@ TEST(test_query_by_pk) {
     int rc = mongreldb_query(g_client, "c_pk", &cond, 1, NULL, 0, 0, &res);
     CHECK_RC(rc);
     CHECK(res.count == 1, "expected 1 row, got %zu", res.count);
+    /* The returned row must carry the queried PK value. */
+    int found = 0;
+    int64_t pk = cell_i64(res.rows[0], 1, &found);
+    CHECK(found && pk == 42, "expected returned pk 42, got %lld", (long long)pk);
 }
 
 TEST(test_query_range) {
@@ -453,8 +510,14 @@ TEST(test_query_range) {
     mongreldb_result res;
     int rc = mongreldb_query(g_client, "c_range", &cond, 1, NULL, 0, 0, &res);
     CHECK_RC(rc);
-    CHECK(res.count >= 1, "expected at least 1 row, got %zu", res.count);
+    /* Only the row with amount=120 (pk=2) falls in [100, 150]. */
+    CHECK(res.count == 1, "expected exactly 1 matching row, got %zu", res.count);
     CHECK(res.truncated == 0, "result should not be truncated");
+    int found = 0;
+    int64_t pk = cell_i64(res.rows[0], 1, &found);
+    CHECK(found && pk == 2, "expected returned pk 2, got %lld", (long long)pk);
+    int64_t amt = cell_i64(res.rows[0], 2, &found);
+    CHECK(found && amt == 120, "expected returned amount 120, got %lld", (long long)amt);
 }
 
 TEST(test_transaction_commit) {
@@ -508,9 +571,27 @@ TEST(test_delete_by_pk) {
 
 TEST(test_sql) {
     SKIP_IF_NO_DAEMON();
+    mongreldb_column cols[] = { int_col(1, "id", 1), int_col(2, "amount", 0) };
+    fresh_table("c_sql", cols, 2);
+
+    int64_t n = -1;
+    CHECK_RC(mongreldb_count(g_client, "c_sql", &n));
+    CHECK(n == 0, "expected 0 rows before SQL INSERT, got %lld", (long long)n);
+
+    /* INSERT via SQL must increase the row count. */
     const char *body = NULL;
-    int rc = mongreldb_sql(g_client, "SELECT 1", &body);
-    CHECK(rc == MDB_OK, "SQL SELECT 1 failed: %s", mongreldb_last_error(g_client));
+    int rc = mongreldb_sql(g_client,
+                           "INSERT INTO c_sql (id, amount) VALUES (10, 42)",
+                           &body);
+    CHECK(rc == MDB_OK, "SQL INSERT failed: %s", mongreldb_last_error(g_client));
+    CHECK_RC(mongreldb_count(g_client, "c_sql", &n));
+    CHECK(n == 1, "expected count to increase to 1 after INSERT, got %lld",
+          (long long)n);
+
+    /* JSON SQL mode must return the inserted row (a non-empty JSON array). */
+    rc = mongreldb_sql(g_client, "SELECT id, amount FROM c_sql", &body);
+    CHECK(rc == MDB_OK, "SQL SELECT failed: %s", mongreldb_last_error(g_client));
+    CHECK(body != NULL && body[0] == '[', "expected JSON array body for SELECT");
 }
 
 TEST(test_string_values) {

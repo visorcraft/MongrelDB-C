@@ -102,6 +102,10 @@ extern "C" {
 
 #define MONGRELDB_DEFAULT_URL "http://127.0.0.1:8453"
 
+/* Cap on a response body size (256 MB). Bodies larger than this are aborted
+ * with MDB_ERR_QUERY. */
+#define MONGRELDB_MAX_RESPONSE_BYTES 268435456LL
+
 /* ── Types ──────────────────────────────────────────────────────────────── */
 
 /* Opaque client handle. Create with mongreldb_connect* and free with

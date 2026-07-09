@@ -733,6 +733,13 @@ static void parse_scalar_into(json_parser *j, mongreldb_value *v, sbuf *blob,
 static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     sbuf *out = (sbuf *)userdata;
     size_t n = size * nmemb;
+    /* Cap the download: abort once the buffered body would exceed the limit
+     * so an oversized response is not buffered fully. Returning 0 signals a
+     * write error to libcurl, aborting the transfer. */
+    if (out->len > MONGRELDB_MAX_RESPONSE_BYTES ||
+        n > (size_t)(MONGRELDB_MAX_RESPONSE_BYTES - out->len)) {
+        return 0;
+    }
     if (sbuf_append(out, ptr, n) != 0) {
         return 0; /* signal error to curl */
     }
@@ -783,6 +790,10 @@ static int do_request(mongreldb_client *c, const char *method,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, c->timeout_seconds);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, c->timeout_seconds);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    /* Cap the response body at 256 MB. The write callback also enforces this
+     * for chunked transfers where the size is unknown ahead of time. */
+    curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE,
+                     (curl_off_t)MONGRELDB_MAX_RESPONSE_BYTES);
 
     if (request_body) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_body);
@@ -834,6 +845,17 @@ static int do_request(mongreldb_client *c, const char *method,
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     free(url.data);
+
+    /* An oversized body aborts the transfer (CURLE_FILESIZE_EXCEEDED from
+     * CURLOPT_MAXFILESIZE_LARGE, or CURLE_WRITE_ERROR from the write callback)
+     * and is reported as MDB_ERR_QUERY. */
+    if (rc == CURLE_FILESIZE_EXCEEDED || rc == CURLE_WRITE_ERROR ||
+        c->recv.len > (size_t)MONGRELDB_MAX_RESPONSE_BYTES) {
+        set_error_fmt(c, MDB_ERR_QUERY,
+                      "response body exceeds %lld bytes",
+                      (long long)MONGRELDB_MAX_RESPONSE_BYTES);
+        return MDB_ERR_QUERY;
+    }
 
     if (rc != CURLE_OK) {
         set_error_fmt(c, MDB_ERR_NETWORK, "network error: %s", curl_easy_strerror(rc));
@@ -1813,7 +1835,7 @@ int mongreldb_sql(mongreldb_client *c, const char *sql, const char **out_body) {
     sbuf_init(&body);
     sbuf_append_str(&body, "{\"sql\":");
     json_escape(&body, sql);
-    sbuf_append_char(&body, '}');
+    sbuf_append_str(&body, ",\"format\":\"json\"}");
     int rc = c_post(c, "/sql", body.data);
     free(body.data);
     if (rc != MDB_OK) {
