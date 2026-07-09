@@ -15,8 +15,8 @@
  *   - Result rows are returned via mongreldb_query(). The row buffers and the
  *     values they point at are valid until the next call on the same client, or
  *     until mongreldb_close(). Copy anything you need to keep.
- *   - Error strings (mongreldb_error()) are valid until the next call on the
- *     same client.
+ *   - Error strings (mongreldb_last_error()) are valid until the next call on
+ *     the same client.
  *
  * Thread safety:
  *   - A mongreldb_client is NOT thread-safe. Use one client per thread, or
@@ -32,6 +32,16 @@
 
 #ifndef MONGRELDB_H
 #define MONGRELDB_H
+
+/* This is the HTTP client header (links libcurl). It must NOT be included
+ * together with mongreldb_engine.h (the native engine ABI header): both
+ * declare mongreldb_* symbols with incompatible signatures. Use exactly one
+ * per translation unit. */
+#ifdef MONGRELDB_ENGINE_H
+#error "mongreldb.h and mongreldb_engine.h declare conflicting mongreldb_* symbols. \
+Include only one per translation unit: mongreldb.h for the HTTP client, \
+mongreldb_engine.h for native engine embedding."
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
@@ -71,8 +81,8 @@ extern "C" {
 /* ── Error codes ────────────────────────────────────────────────────────── */
 /*
  * Every function returns one of these. MDB_OK (0) means success; negative
- * values are failures. Use mongreldb_error() / mongreldb_error_code() for the
- * detail of the most recent failure on the current client.
+ * values are failures. Use mongreldb_last_error() / mongreldb_last_error_code()
+ * for the detail of the most recent failure on the current client.
  *
  * These mirror the HTTP status mapping of the other clients: auth failures
  * (401/403), not found (404), conflict (409), and everything else.

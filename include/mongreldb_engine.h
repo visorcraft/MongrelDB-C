@@ -31,6 +31,16 @@
 #ifndef MONGRELDB_ENGINE_H
 #define MONGRELDB_ENGINE_H
 
+/* This is the native engine ABI header (link libmongreldb). It must NOT be
+ * included together with mongreldb.h (the HTTP client header): both declare
+ * mongreldb_* symbols with incompatible signatures, which would cause
+ * conflicting-types compile errors. Use exactly one per translation unit. */
+#ifdef MONGRELDB_H
+#error "mongreldb_engine.h and mongreldb.h declare conflicting mongreldb_* symbols. \
+Include only one per translation unit: mongreldb.h for the HTTP client, \
+mongreldb_engine.h for native engine embedding."
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>

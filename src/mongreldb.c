@@ -13,7 +13,10 @@
 #include <curl/curl.h>
 
 #include <ctype.h>
+#include <limits.h>
+#include <math.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,11 +43,21 @@ static void sbuf_free(sbuf *s) {
 }
 
 static int sbuf_reserve(sbuf *s, size_t extra) {
-    if (s->len + extra + 1 <= s->cap) {
+    /* Guard against size_t overflow: len + extra + 1 must not wrap. */
+    if (extra > SIZE_MAX - 1 - s->len) {
+        return -1;
+    }
+    size_t need = s->len + extra + 1;
+    if (need <= s->cap) {
         return 0;
     }
     size_t ncap = s->cap ? s->cap : 64;
-    while (s->len + extra + 1 > ncap) {
+    while (need > ncap) {
+        if (ncap > SIZE_MAX / 2) {
+            /* Doubling would overflow; clamp to the exact need. */
+            ncap = need;
+            break;
+        }
         ncap *= 2;
     }
     char *nd = (char *)realloc(s->data, ncap);
@@ -100,6 +113,16 @@ struct mongreldb_client {
     mongreldb_cell *cells_arr;
     size_t cells_cap;
     sbuf values_blob;              /* backing strings for the current result */
+    /* Per-cell string offsets into values_blob. SIZE_MAX means "not a string".
+     * Used to rebaseline v.str pointers after values_blob stops reallocing. */
+    size_t *cell_str_offs;
+    size_t cell_str_offs_cap;
+    /* Per-row cell start offsets. We store offsets (not pointers) while
+     * parsing because cells_arr and values_blob may realloc between rows,
+     * which would invalidate any raw pointers. Pointers are resolved from
+     * these offsets once all rows are decoded. */
+    size_t *row_cell_starts;
+    size_t row_cell_starts_cap;
 
     int last_code;
 };
@@ -181,9 +204,16 @@ static void json_serialize_value(sbuf *out, const mongreldb_value *v) {
             break;
         }
         case MDB_VAL_DOUBLE: {
-            char buf[64];
-            snprintf(buf, sizeof(buf), "%.17g", v->v.f64);
-            sbuf_append_str(out, buf);
+            /* NaN and Infinity have no valid JSON representation; emit null
+             * so we never produce invalid JSON that the daemon would reject. */
+            if (v->v.f64 != v->v.f64 || v->v.f64 == HUGE_VAL ||
+                v->v.f64 == -HUGE_VAL) {
+                sbuf_append_str(out, "null");
+            } else {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.17g", v->v.f64);
+                sbuf_append_str(out, buf);
+            }
             break;
         }
         case MDB_VAL_STRING:
@@ -596,11 +626,18 @@ static int json_get_bool(const char *src, size_t len,
  */
 
 /* parse_scalar_into reads one JSON value at j->p into v. Strings are appended
- * to blob and referenced; numbers choose int64 vs double based on content. */
+ * to blob; the base offset within blob is written to *str_off_out (may be NULL).
+ * NOTE: for strings we set v->v.str to a pointer into blob->data, but that
+ * pointer is only valid until the next sbuf_reserve on blob. Callers that keep
+ * v across multiple parse_scalar_into calls must resolve v->v.str from the
+ * returned offset after all parsing is done (see mongreldb_query). */
 static void parse_scalar_into(json_parser *j, mongreldb_value *v, sbuf *blob,
-                              size_t *blob_str_off) {
+                              size_t *str_off_out) {
     int ch = jp_peek(j);
     v->tag = MDB_VAL_NULL;
+    if (str_off_out) {
+        *str_off_out = (size_t)-1;
+    }
     if (ch == '"') {
         const char *start = j->p + 1;
         jp_string(j);
@@ -650,8 +687,8 @@ static void parse_scalar_into(json_parser *j, mongreldb_value *v, sbuf *blob,
         blob->len += o + 1;
         v->tag = MDB_VAL_STRING;
         v->v.str = dst;
-        if (blob_str_off) {
-            *blob_str_off = base;
+        if (str_off_out) {
+            *str_off_out = base;
         }
     } else if (ch == 't' || ch == 'f') {
         const char *start = j->p;
@@ -756,15 +793,29 @@ static int do_request(mongreldb_client *c, const char *method,
     if (c->token) {
         sbuf auth;
         sbuf_init(&auth);
-        sbuf_append_str(&auth, "Authorization: Bearer ");
-        sbuf_append_str(&auth, c->token);
+        if (sbuf_append_str(&auth, "Authorization: Bearer ") != 0 ||
+            sbuf_append_str(&auth, c->token) != 0) {
+            free(auth.data);
+            free(url.data);
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+            set_error(c, MDB_ERR_NOMEM, "out of memory building auth header");
+            return MDB_ERR_NOMEM;
+        }
         curl_easy_setopt(curl, CURLOPT_USERPWD, NULL);
-        struct curl_slist *ah = curl_slist_append(NULL, auth.data);
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, NULL);
-        /* Merge with existing headers. */
-        headers = curl_slist_append(headers, auth.data);
+        /* headers was already handed to CURLOPT_HTTPHEADER at line 743;
+         * curl_slist_append extends that same list in place, so libcurl
+         * sees the Authorization header without needing a second setopt. */
+        struct curl_slist *appended = curl_slist_append(headers, auth.data);
         free(auth.data);
-        (void)ah;
+        if (!appended) {
+            free(url.data);
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+            set_error(c, MDB_ERR_NOMEM, "out of memory appending auth header");
+            return MDB_ERR_NOMEM;
+        }
+        headers = appended;
     } else if (c->username) {
         sbuf creds;
         sbuf_init(&creds);
@@ -907,6 +958,10 @@ mongreldb_client *mongreldb_connect_with_token(const char *url, const char *toke
     }
     if (token && *token) {
         c->token = dup_str(token);
+        if (!c->token) {
+            mongreldb_close(c);
+            return NULL;
+        }
     }
     return c;
 }
@@ -951,6 +1006,8 @@ void mongreldb_close(mongreldb_client *c) {
     free(c->rows_arr);
     free(c->cells_arr);
     sbuf_free(&c->values_blob);
+    free(c->cell_str_offs);
+    free(c->row_cell_starts);
     free(c);
 }
 
@@ -1033,7 +1090,10 @@ int mongreldb_table_names(mongreldb_client *c,
             }
             c->names_arr = na;
         }
-        c->names_arr[(*out_count)++] = c->names_blob.data + base;
+        /* Store the OFFSET (not the pointer) because later appends to
+         * names_blob may realloc and dangle it. Pointers are resolved from
+         * offsets after the loop completes. */
+        c->names_arr[(*out_count)++] = (char *)base;
 
         int ch = jp_peek(&j);
         if (ch == ',') {
@@ -1056,6 +1116,11 @@ int mongreldb_table_names(mongreldb_client *c,
         c->names_arr = na;
     }
     c->names_arr[*out_count] = NULL;
+
+    /* names_blob is now stable. Resolve the stored offsets to real pointers. */
+    for (size_t i = 0; i < *out_count; i++) {
+        c->names_arr[i] = c->names_blob.data + (size_t)c->names_arr[i];
+    }
     *out_names = (const char **)c->names_arr;
     return MDB_OK;
 }
@@ -1431,9 +1496,15 @@ int mongreldb_query(mongreldb_client *c,
     /* Decode the rows array into the client's scratch buffers. Reset them. */
     free(c->rows_arr);
     free(c->cells_arr);
+    free(c->cell_str_offs);
+    free(c->row_cell_starts);
     sbuf_free(&c->values_blob);
     c->rows_arr = NULL;
     c->cells_arr = NULL;
+    c->cell_str_offs = NULL;
+    c->cell_str_offs_cap = 0;
+    c->row_cell_starts = NULL;
+    c->row_cell_starts_cap = 0;
     c->rows_cap = 0;
     c->cells_cap = 0;
 
@@ -1503,6 +1574,7 @@ int mongreldb_query(mongreldb_client *c,
     if (jp_peek(&w) == ']') {
         return MDB_OK;
     }
+    size_t total_cells_global = 0; /* accumulates across all rows for fixup */
     for (;;) {
         if (jp_peek(&w) != '{') {
             return MDB_ERR_JSON;
@@ -1589,11 +1661,30 @@ int mongreldb_query(mongreldb_client *c,
                             mongreldb_cell *cell = &c->cells_arr[total_cells];
                             cell->column_id = colid;
                             cell->value.tag = MDB_VAL_NULL;
-                            parse_scalar_into(&w, &cell->value, &c->values_blob, NULL);
+
+                            /* Grow the parallel string-offset scratch so we
+                             * can rebaseline v.str pointers after parsing. */
+                            if (total_cells + 1 > c->cell_str_offs_cap) {
+                                size_t ncap =
+                                    c->cell_str_offs_cap ? c->cell_str_offs_cap * 2 : 16;
+                                while (total_cells + 1 > ncap) {
+                                    ncap *= 2;
+                                }
+                                size_t *no = (size_t *)realloc(
+                                    c->cell_str_offs, ncap * sizeof(size_t));
+                                if (!no) {
+                                    return MDB_ERR_NOMEM;
+                                }
+                                c->cell_str_offs = no;
+                                c->cell_str_offs_cap = ncap;
+                            }
+                            parse_scalar_into(&w, &cell->value, &c->values_blob,
+                                              &c->cell_str_offs[total_cells]);
                             if (!w.ok) {
                                 return MDB_ERR_JSON;
                             }
                             total_cells++;
+                            total_cells_global = total_cells;
                             cells_in_row++;
 
                             int ch = jp_peek(&w);
@@ -1643,7 +1734,10 @@ int mongreldb_query(mongreldb_client *c,
         }
         (void)decoded_cells;
 
-        /* Record the row as a slice of the cells buffer. */
+        /* Record the row. We store the cell START OFFSET (not a pointer)
+         * because c->cells_arr and c->values_blob may realloc while parsing
+         * later rows, which would dangle a raw pointer. The offset is
+         * resolved to a pointer after the entire rows loop completes. */
         if (out_result->count == c->rows_cap) {
             size_t ncap = c->rows_cap ? c->rows_cap * 2 : 8;
             mongreldb_row *nr = (mongreldb_row *)realloc(
@@ -1654,7 +1748,20 @@ int mongreldb_query(mongreldb_client *c,
             c->rows_arr = nr;
             c->rows_cap = ncap;
         }
-        c->rows_arr[out_result->count].cells = c->cells_arr + row_cell_start;
+        if (out_result->count == c->row_cell_starts_cap) {
+            size_t ncap = c->row_cell_starts_cap ? c->row_cell_starts_cap * 2 : 8;
+            while (out_result->count >= ncap) {
+                ncap *= 2;
+            }
+            size_t *ns = (size_t *)realloc(c->row_cell_starts,
+                                           ncap * sizeof(size_t));
+            if (!ns) {
+                return MDB_ERR_NOMEM;
+            }
+            c->row_cell_starts = ns;
+            c->row_cell_starts_cap = ncap;
+        }
+        c->row_cell_starts[out_result->count] = row_cell_start;
         c->rows_arr[out_result->count].count = cells_in_row;
         out_result->count++;
         out_result->rows = c->rows_arr;
@@ -1668,6 +1775,25 @@ int mongreldb_query(mongreldb_client *c,
             break;
         }
         return MDB_ERR_JSON;
+    }
+
+    /* All parsing is complete and c->cells_arr / c->values_blob are now
+     * stable (no more reallocs). Resolve the stored cell-start offsets to real
+     * pointers so the caller sees a valid, non-dangling cells slice per row,
+     * and rebaseline each string value's pointer into the now-stable
+     * values_blob. Rows with no cells get NULL to avoid forming a pointer
+     * from a NULL base (UB). */
+    for (size_t r = 0; r < out_result->count; r++) {
+        c->rows_arr[r].cells = (c->rows_arr[r].count > 0)
+                                   ? c->cells_arr + c->row_cell_starts[r]
+                                   : NULL;
+    }
+    for (size_t i = 0; i < total_cells_global; i++) {
+        if (c->cell_str_offs[i] != (size_t)-1 &&
+            c->cells_arr[i].value.tag == MDB_VAL_STRING) {
+            c->cells_arr[i].value.v.str =
+                c->values_blob.data + c->cell_str_offs[i];
+        }
     }
 
     return MDB_OK;
