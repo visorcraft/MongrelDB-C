@@ -40,6 +40,28 @@
 extern "C" {
 #endif
 
+/* ── Symbol export macro ────────────────────────────────────────────────── */
+/*
+ * The shared library is built with hidden symbol visibility
+ * (C_VISIBILITY_PRESET hidden in CMakeLists.txt) so only annotated symbols are
+ * exported. MONGRELDB_C_API marks the public surface; when building the library
+ * (MONGRELDB_C_EXPORTS defined) the symbols use default visibility / dllexport,
+ * otherwise they are imported by consumers.
+ */
+#if defined(_WIN32) || defined(__CYGWIN__)
+#  ifdef MONGRELDB_C_EXPORTS
+#    define MONGRELDB_C_API __declspec(dllexport)
+#  else
+#    define MONGRELDB_C_API __declspec(dllimport)
+#  endif
+#else
+#  if defined(__GNUC__) && __GNUC__ >= 4
+#    define MONGRELDB_C_API __attribute__((visibility("default")))
+#  else
+#    define MONGRELDB_C_API
+#  endif
+#endif
+
 /* ── Version ────────────────────────────────────────────────────────────── */
 
 #define MONGRELDB_C_VERSION_MAJOR 0
@@ -196,79 +218,79 @@ typedef struct {
 
 /* mongreldb_connect creates a client for the daemon at url. Pass NULL or "" to
  * use MONGRELDB_DEFAULT_URL. Returns NULL on allocation failure. */
-mongreldb_client *mongreldb_connect(const char *url);
+MONGRELDB_C_API mongreldb_client *mongreldb_connect(const char *url);
 
 /* mongreldb_connect_with_token connects with a Bearer token
  * (--auth-token mode). */
-mongreldb_client *mongreldb_connect_with_token(const char *url, const char *token);
+MONGRELDB_C_API mongreldb_client *mongreldb_connect_with_token(const char *url, const char *token);
 
 /* mongreldb_connect_with_basic_auth connects with HTTP Basic credentials
  * (--auth-users mode). */
-mongreldb_client *mongreldb_connect_with_basic_auth(const char *url,
+MONGRELDB_C_API mongreldb_client *mongreldb_connect_with_basic_auth(const char *url,
                                                     const char *username,
                                                     const char *password);
 
 /* mongreldb_set_timeout sets the per-request timeout in seconds (default 30). */
-void mongreldb_set_timeout(mongreldb_client *c, long timeout_seconds);
+MONGRELDB_C_API void mongreldb_set_timeout(mongreldb_client *c, long timeout_seconds);
 
 /* mongreldb_close releases the client and all owned memory. NULL-safe. */
-void mongreldb_close(mongreldb_client *c);
+MONGRELDB_C_API void mongreldb_close(mongreldb_client *c);
 
 /* mongreldb_last_error returns a human-readable message for the most recent
  * failure on c. Valid until the next call on c. Returns "" if no error. */
-const char *mongreldb_last_error(const mongreldb_client *c);
+MONGRELDB_C_API const char *mongreldb_last_error(const mongreldb_client *c);
 
 /* mongreldb_last_error_code returns the error code for the most recent
  * failure, or MDB_OK. */
-int mongreldb_last_error_code(const mongreldb_client *c);
+MONGRELDB_C_API int mongreldb_last_error_code(const mongreldb_client *c);
 
 /* ── Health & tables ────────────────────────────────────────────────────── */
 
 /* mongreldb_health reports whether the daemon is reachable and healthy.
  * Returns MDB_OK on success, a negative error code otherwise. */
-int mongreldb_health(mongreldb_client *c);
+MONGRELDB_C_API int mongreldb_health(mongreldb_client *c);
 
 /* mongreldb_table_names lists all table names. out_names receives a
  * NUL-terminated array of string pointers (client-owned, valid until the next
  * call); out_count receives the count. Returns MDB_OK or a negative code. */
-int mongreldb_table_names(mongreldb_client *c,
+MONGRELDB_C_API int mongreldb_table_names(mongreldb_client *c,
                           const char ***out_names, size_t *out_count);
 
 /* mongreldb_create_table creates a table. Returns the assigned table id in
  * *out_table_id, or MDB_OK with *out_table_id == 0 if the server omitted it. */
-int mongreldb_create_table(mongreldb_client *c,
+MONGRELDB_C_API int mongreldb_create_table(mongreldb_client *c,
                            const char *name,
                            const mongreldb_column *columns, size_t column_count,
                            int64_t *out_table_id);
 
 /* mongreldb_drop_table drops a table by name. */
-int mongreldb_drop_table(mongreldb_client *c, const char *name);
+MONGRELDB_C_API int mongreldb_drop_table(mongreldb_client *c, const char *name);
 
 /* mongreldb_count returns the row count for a table in *out_count. */
-int mongreldb_count(mongreldb_client *c, const char *table, int64_t *out_count);
+MONGRELDB_C_API int mongreldb_count(mongreldb_client *c, const char *table, int64_t *out_count);
 
 /* ── CRUD (single-op transactions) ─────────────────────────────────────── */
 
 /* mongreldb_put inserts a row. idempotency_key (or NULL) makes the commit safe
  * to retry. Returns MDB_OK or a negative code. */
-int mongreldb_put(mongreldb_client *c,
+MONGRELDB_C_API int mongreldb_put(mongreldb_client *c,
                   const char *table,
                   const mongreldb_input_cell *cells, size_t cell_count,
                   const char *idempotency_key);
 
 /* mongreldb_upsert inserts a row, or updates it on a primary-key conflict.
  * update_cells (or NULL) supplies the values written on conflict. */
-int mongreldb_upsert(mongreldb_client *c,
+MONGRELDB_C_API int mongreldb_upsert(mongreldb_client *c,
                      const char *table,
                      const mongreldb_input_cell *cells, size_t cell_count,
                      const mongreldb_input_cell *update_cells, size_t update_cell_count,
                      const char *idempotency_key);
 
 /* mongreldb_delete removes a row by its internal row id. */
-int mongreldb_delete(mongreldb_client *c, const char *table, int64_t row_id);
+MONGRELDB_C_API int mongreldb_delete(mongreldb_client *c, const char *table, int64_t row_id);
 
 /* mongreldb_delete_by_pk removes a row by its primary-key value. */
-int mongreldb_delete_by_pk(mongreldb_client *c, const char *table,
+MONGRELDB_C_API int mongreldb_delete_by_pk(mongreldb_client *c, const char *table,
                            const mongreldb_value *pk);
 
 /* ── Batch transactions ────────────────────────────────────────────────── */
@@ -277,7 +299,7 @@ int mongreldb_delete_by_pk(mongreldb_client *c, const char *table,
  * /kit/txn request. The engine enforces unique, foreign-key, and check
  * constraints at commit time; any violation rolls back the entire batch.
  * idempotency_key (or NULL) makes the commit safe to retry. */
-int mongreldb_commit(mongreldb_client *c,
+MONGRELDB_C_API int mongreldb_commit(mongreldb_client *c,
                      const mongreldb_op *ops, size_t op_count,
                      const char *idempotency_key);
 
@@ -287,7 +309,7 @@ int mongreldb_commit(mongreldb_client *c,
  * AND-ed; projection (or NULL) restricts returned column ids; limit (or 0)
  * caps the result count. The returned result is client-owned and valid until
  * the next client call. Returns MDB_OK or a negative code. */
-int mongreldb_query(mongreldb_client *c,
+MONGRELDB_C_API int mongreldb_query(mongreldb_client *c,
                     const char *table,
                     const mongreldb_condition *conditions, size_t condition_count,
                     const int64_t *projection, size_t projection_count,
@@ -296,7 +318,7 @@ int mongreldb_query(mongreldb_client *c,
 
 /* mongreldb_result_free is a no-op retained for symmetry; result memory is
  * owned by the client and reused on the next call. Safe to call. */
-void mongreldb_result_free(mongreldb_result *result);
+MONGRELDB_C_API void mongreldb_result_free(mongreldb_result *result);
 
 /* ── SQL ───────────────────────────────────────────────────────────────── */
 
@@ -305,17 +327,17 @@ void mongreldb_result_free(mongreldb_result *result);
  * SELECT the daemon typically streams Arrow IPC bytes; the raw (possibly
  * non-JSON) body is returned in *out_body (client-owned, NUL-terminated, valid
  * until the next call) when out_body is non-NULL. */
-int mongreldb_sql(mongreldb_client *c, const char *sql, const char **out_body);
+MONGRELDB_C_API int mongreldb_sql(mongreldb_client *c, const char *sql, const char **out_body);
 
 /* ── Schema ────────────────────────────────────────────────────────────── */
 
 /* mongreldb_schema returns the full schema catalog as the raw JSON body
  * (client-owned, NUL-terminated, valid until the next call). */
-int mongreldb_schema(mongreldb_client *c, const char **out_body);
+MONGRELDB_C_API int mongreldb_schema(mongreldb_client *c, const char **out_body);
 
 /* mongreldb_schema_for returns the descriptor for a single table as the raw
  * JSON body (client-owned, NUL-terminated, valid until the next call). */
-int mongreldb_schema_for(mongreldb_client *c, const char *table,
+MONGRELDB_C_API int mongreldb_schema_for(mongreldb_client *c, const char *table,
                          const char **out_body);
 
 #ifdef __cplusplus
