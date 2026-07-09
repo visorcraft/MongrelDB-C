@@ -86,6 +86,11 @@ int main(void) {
 
     int table_created = 0;
 
+    /* Status starts in the failure state and is cleared only after all steps
+     * complete. This way an early `goto cleanup` returns non-zero, so CI can
+     * detect that the example failed. */
+    int status = 1;
+
     /* 1. Health check; bail out if the daemon is unreachable. */
     if (mongreldb_health(db) != MDB_OK) {
         fprintf(stderr, "daemon not reachable at %s: %s\n", url, mongreldb_last_error(db));
@@ -169,6 +174,9 @@ int main(void) {
     }
     printf("Deleted Carol; remaining rows: %lld\n", (long long)n);
 
+    /* All steps completed. */
+    status = 0;
+
 cleanup:
     /* Guaranteed cleanup: drop the table if it was created, then close. */
     if (table_created) {
@@ -179,5 +187,5 @@ cleanup:
         }
     }
     mongreldb_close(db);
-    return 0;
+    return status;
 }
