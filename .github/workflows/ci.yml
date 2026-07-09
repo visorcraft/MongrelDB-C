@@ -73,6 +73,14 @@ jobs:
           MONGRELDB_URL: http://127.0.0.1:8453
         run: ctest --output-on-failure
 
+      - name: Run examples
+        run: |
+          for ex in examples/*.c; do
+            echo "=== Running $ex ==="
+            gcc -std=c99 -Iinclude -o /tmp/ex "$ex" src/mongreldb.c -lcurl -lm
+            /tmp/ex || { echo "FAILED: $ex"; exit 1; }
+          done
+
       - name: Dump server log on failure
         if: failure()
         run: cat /tmp/mongreldb-server.log
