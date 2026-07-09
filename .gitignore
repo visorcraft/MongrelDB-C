@@ -1,0 +1,33 @@
+# Build output
+build/
+cmake-build-*/
+out/
+
+# Agent / assistant instruction files are workspace-local, never published
+AGENTS.md
+CLAUDE.md
+.cursorrules
+.zcode/
+
+# Compiled objects and binaries
+*.o
+*.obj
+*.so
+*.so.*
+*.dylib
+*.a
+*.dll
+*.exe
+*.lib
+
+# Logs
+*.log
+
+# OS and editor state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
