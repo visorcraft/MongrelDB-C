@@ -7,13 +7,14 @@
  *       $(pkg-config --cflags --libs libcurl) -o examples/transactions
  *   ./examples/transactions
  *
- * Requires a mongreldb-server daemon running on http://127.0.0.1:8453.
+ * Requires a mongreldb-server daemon running on http://127.0.0.1:8453, or
+ * point MONGRELDB_URL at a running daemon.
  *
  * Creates a table, opens one transaction, stages three puts, and commits
  * them atomically. It then verifies the row count. Finally it stages a
  * fourth put and commits it twice with the SAME idempotency key: the
  * daemon replays the first commit's result so the second commit is a
- * no-op. The table is dropped at the end.
+ * no-op. The table is dropped at the end (even on error).
  */
 
 #include <mongreldb.h>
@@ -21,10 +22,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-#define DB_URL "http://127.0.0.1:8453"
-#define TABLE  "example_txn"
-#define TXN_KEY "example-txn-key"
+#define DB_URL_DEFAULT "http://127.0.0.1:8453"
+#define TABLE_PREFIX   "example_txn_"
+#define TABLE_SIZE     64
 
 /* Column schema shared across all examples:
  *   col 1 = id (int64, primary key)
@@ -45,26 +47,49 @@ static const mongreldb_column kCols[] = {
         {3, {MDB_VAL_DOUBLE, .v.f64 = (score)}},                                \
     })
 
-/* Build a PUT op referencing the row array. cell_count is always 3 here. */
-#define PUT_OP(cells)                                                            \
-    ((mongreldb_op){MDB_OP_PUT, TABLE, (cells), 3, NULL, 0, 0, {{0}}})
+/* Build a PUT op referencing the row array. Uses designated initializers so
+ * the mongreldb_op aggregate is initialized cleanly under -Wall -Wextra: the
+ * omitted members (update_cells, row_id, pk_value) are zero-initialized, which
+ * avoids the "braces around scalar initializer" a positional initializer for
+ * the pk_value union member would trigger. The macro argument is named row_cs
+ * (not `cells`) to avoid clashing with the struct member designator `.cells`. */
+#define PUT_OP(row_cs)                                                          \
+    ((mongreldb_op){                                                            \
+        .type = MDB_OP_PUT,                                                     \
+        .table = g_table,                                                       \
+        .cells = (row_cs),                                                      \
+        .cell_count = 3,                                                        \
+    })
 
-static void die(mongreldb_client *c, const char *what) {
-    fprintf(stderr, "%s failed: %s\n", what, mongreldb_last_error(c));
-    mongreldb_close(c);
-    exit(1);
-}
+/* The per-run table name: filled in by main() and referenced by the PUT_OP
+ * macro. Idempotency keys are built locally in main(). */
+static char g_table[TABLE_SIZE];
 
 int main(void) {
-    mongreldb_client *db = mongreldb_connect(DB_URL);
+    /* Per-run unique suffix (unix time) keeps every invocation isolated on a
+     * shared daemon, and the idempotency key must be unique per run too: a
+     * reused key replays the original result and silently drops the new batch. */
+    long ts = (long)time(NULL);
+    snprintf(g_table, sizeof(g_table), "%s%ld", TABLE_PREFIX, ts);
+    char txn_key[TABLE_SIZE + 8];
+    snprintf(txn_key, sizeof(txn_key), "example-txn-key-%ld", ts);
+
+    const char *url = getenv("MONGRELDB_URL");
+    if (url == NULL || url[0] == '\0') {
+        url = DB_URL_DEFAULT;
+    }
+
+    mongreldb_client *db = mongreldb_connect(url);
     if (!db) {
         fprintf(stderr, "mongreldb_connect failed\n");
         return 1;
     }
 
+    int table_created = 0;
+
     /* 1. Health check; bail out if the daemon is unreachable. */
     if (mongreldb_health(db) != MDB_OK) {
-        fprintf(stderr, "daemon not reachable at %s: %s\n", DB_URL, mongreldb_last_error(db));
+        fprintf(stderr, "daemon not reachable at %s: %s\n", url, mongreldb_last_error(db));
         mongreldb_close(db);
         return 1;
     }
@@ -72,10 +97,12 @@ int main(void) {
 
     /* 2. Create the table. */
     int64_t tid = 0;
-    if (mongreldb_create_table(db, TABLE, kCols, 3, &tid) != MDB_OK) {
-        die(db, "create_table");
+    if (mongreldb_create_table(db, g_table, kCols, 3, &tid) != MDB_OK) {
+        fprintf(stderr, "create_table failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
-    printf("Created table %s (id %lld)\n", TABLE, (long long)tid);
+    table_created = 1;
+    printf("Created table %s (id %lld)\n", g_table, (long long)tid);
 
     /* 3. Stage three puts and commit them atomically. */
     mongreldb_op batch1[] = {
@@ -84,13 +111,17 @@ int main(void) {
         PUT_OP(ROW(3, "Carol", 78.3)),
     };
     if (mongreldb_commit(db, batch1, 3, NULL) != MDB_OK) {
-        die(db, "commit (3 puts)");
+        fprintf(stderr, "commit (3 puts) failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
     printf("Committed transaction with 3 puts\n");
 
     /* 4. Verify the row count. */
     int64_t n = 0;
-    if (mongreldb_count(db, TABLE, &n) != MDB_OK) die(db, "count");
+    if (mongreldb_count(db, g_table, &n) != MDB_OK) {
+        fprintf(stderr, "count failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
+    }
     printf("Total rows after commit: %lld\n", (long long)n);
 
     /* 5. Idempotent retry: stage a fourth put and commit twice with the
@@ -98,23 +129,33 @@ int main(void) {
     mongreldb_op batch2[] = {
         PUT_OP(ROW(4, "Dave", 60.0)),
     };
-    if (mongreldb_commit(db, batch2, 1, TXN_KEY) != MDB_OK) {
-        die(db, "commit (4th put, first attempt)");
+    if (mongreldb_commit(db, batch2, 1, txn_key) != MDB_OK) {
+        fprintf(stderr, "commit (4th put, first attempt) failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
-    printf("Committed 4th put with idempotency key %s\n", TXN_KEY);
+    printf("Committed 4th put with idempotency key %s\n", txn_key);
 
-    if (mongreldb_commit(db, batch2, 1, TXN_KEY) != MDB_OK) {
-        die(db, "commit (4th put, idempotent retry)");
+    if (mongreldb_commit(db, batch2, 1, txn_key) != MDB_OK) {
+        fprintf(stderr, "commit (4th put, idempotent retry) failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
     printf("Recommitted with same key (idempotent replay)\n");
 
-    if (mongreldb_count(db, TABLE, &n) != MDB_OK) die(db, "count");
+    if (mongreldb_count(db, g_table, &n) != MDB_OK) {
+        fprintf(stderr, "count failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
+    }
     printf("Total rows after idempotent retry: %lld\n", (long long)n);
 
-    /* 6. Cleanup. */
-    mongreldb_drop_table(db, TABLE);
-    printf("Dropped table %s\n", TABLE);
-
+cleanup:
+    /* Guaranteed cleanup: drop the table if it was created, then close. */
+    if (table_created) {
+        if (mongreldb_drop_table(db, g_table) == MDB_OK) {
+            printf("Dropped table %s\n", g_table);
+        } else {
+            fprintf(stderr, "drop_table failed: %s\n", mongreldb_last_error(db));
+        }
+    }
     mongreldb_close(db);
     return 0;
 }

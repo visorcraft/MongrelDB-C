@@ -7,7 +7,8 @@
  *       $(pkg-config --cflags --libs libcurl) -o examples/basic_crud
  *   ./examples/basic_crud
  *
- * Requires a mongreldb-server daemon running on http://127.0.0.1:8453.
+ * Requires a mongreldb-server daemon running on http://127.0.0.1:8453, or
+ * point MONGRELDB_URL at a running daemon.
  *
  * Creates a table, inserts three rows, counts them, queries all rows, upserts
  * (updates) one row by primary key, deletes one row, then drops the table.
@@ -19,9 +20,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-#define DB_URL "http://127.0.0.1:8453"
-#define TABLE  "example_crud"
+#define DB_URL_DEFAULT "http://127.0.0.1:8453"
+#define TABLE_PREFIX   "example_crud_"
+#define TABLE_SIZE     64
 
 /* Column schema shared across all examples:
  *   col 1 = id (int64, primary key)
@@ -64,22 +67,28 @@ static void print_result(const mongreldb_result *res) {
     }
 }
 
-static void die(mongreldb_client *c, const char *what) {
-    fprintf(stderr, "%s failed: %s\n", what, mongreldb_last_error(c));
-    mongreldb_close(c);
-    exit(1);
-}
-
 int main(void) {
-    mongreldb_client *db = mongreldb_connect(DB_URL);
+    /* Per-run unique suffix (unix time) keeps every invocation isolated on a
+     * shared daemon. */
+    char table[TABLE_SIZE];
+    snprintf(table, sizeof(table), "%s%ld", TABLE_PREFIX, (long)time(NULL));
+
+    const char *url = getenv("MONGRELDB_URL");
+    if (url == NULL || url[0] == '\0') {
+        url = DB_URL_DEFAULT;
+    }
+
+    mongreldb_client *db = mongreldb_connect(url);
     if (!db) {
         fprintf(stderr, "mongreldb_connect failed\n");
         return 1;
     }
 
+    int table_created = 0;
+
     /* 1. Health check; bail out if the daemon is unreachable. */
     if (mongreldb_health(db) != MDB_OK) {
-        fprintf(stderr, "daemon not reachable at %s: %s\n", DB_URL, mongreldb_last_error(db));
+        fprintf(stderr, "daemon not reachable at %s: %s\n", url, mongreldb_last_error(db));
         mongreldb_close(db);
         return 1;
     }
@@ -87,34 +96,41 @@ int main(void) {
 
     /* 2. Create the table. */
     int64_t tid = 0;
-    if (mongreldb_create_table(db, TABLE, kCols, 3, &tid) != MDB_OK) {
-        die(db, "create_table");
+    if (mongreldb_create_table(db, table, kCols, 3, &tid) != MDB_OK) {
+        fprintf(stderr, "create_table failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
-    printf("Created table %s (id %lld)\n", TABLE, (long long)tid);
+    table_created = 1;
+    printf("Created table %s (id %lld)\n", table, (long long)tid);
 
     /* 3. Insert three rows. */
-    if (mongreldb_put(db, TABLE, ROW(1, "Alice", 95.5), 3, NULL) != MDB_OK) {
-        die(db, "put");
+    if (mongreldb_put(db, table, ROW(1, "Alice", 95.5), 3, NULL) != MDB_OK) {
+        fprintf(stderr, "put failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
-    if (mongreldb_put(db, TABLE, ROW(2, "Bob", 82.0), 3, NULL) != MDB_OK) {
-        die(db, "put");
+    if (mongreldb_put(db, table, ROW(2, "Bob", 82.0), 3, NULL) != MDB_OK) {
+        fprintf(stderr, "put failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
-    if (mongreldb_put(db, TABLE, ROW(3, "Carol", 78.3), 3, NULL) != MDB_OK) {
-        die(db, "put");
+    if (mongreldb_put(db, table, ROW(3, "Carol", 78.3), 3, NULL) != MDB_OK) {
+        fprintf(stderr, "put failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
     printf("Inserted 3 rows\n");
 
     /* 4. Count. */
     int64_t n = 0;
-    if (mongreldb_count(db, TABLE, &n) != MDB_OK) {
-        die(db, "count");
+    if (mongreldb_count(db, table, &n) != MDB_OK) {
+        fprintf(stderr, "count failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
     printf("Total rows: %lld\n", (long long)n);
 
     /* 5. Query all rows (no conditions, no projection, no limit). */
     mongreldb_result res;
-    if (mongreldb_query(db, TABLE, NULL, 0, NULL, 0, 0, &res) != MDB_OK) {
-        die(db, "query");
+    if (mongreldb_query(db, table, NULL, 0, NULL, 0, 0, &res) != MDB_OK) {
+        fprintf(stderr, "query failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
     printf("Query returned %zu rows:\n", res.count);
     print_result(&res);
@@ -130,29 +146,38 @@ int main(void) {
         {2, {MDB_VAL_STRING, .v.str = "Alice"}},
         {3, {MDB_VAL_DOUBLE, .v.f64 = 100.0}},
     };
-    if (mongreldb_upsert(db, TABLE, up, 3, upd, 2, NULL) != MDB_OK) {
-        die(db, "upsert");
+    if (mongreldb_upsert(db, table, up, 3, upd, 2, NULL) != MDB_OK) {
+        fprintf(stderr, "upsert failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
     printf("Upserted Alice's score to 100.0\n");
-    if (mongreldb_count(db, TABLE, &n) != MDB_OK) {
-        die(db, "count");
+    if (mongreldb_count(db, table, &n) != MDB_OK) {
+        fprintf(stderr, "count failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
     printf("Total rows after upsert: %lld\n", (long long)n);
 
     /* 7. Delete Carol (primary key 3). */
     mongreldb_value pk = {MDB_VAL_INT64, .v.i64 = 3};
-    if (mongreldb_delete_by_pk(db, TABLE, &pk) != MDB_OK) {
-        die(db, "delete_by_pk");
+    if (mongreldb_delete_by_pk(db, table, &pk) != MDB_OK) {
+        fprintf(stderr, "delete_by_pk failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
-    if (mongreldb_count(db, TABLE, &n) != MDB_OK) {
-        die(db, "count");
+    if (mongreldb_count(db, table, &n) != MDB_OK) {
+        fprintf(stderr, "count failed: %s\n", mongreldb_last_error(db));
+        goto cleanup;
     }
     printf("Deleted Carol; remaining rows: %lld\n", (long long)n);
 
-    /* 8. Cleanup. */
-    mongreldb_drop_table(db, TABLE);
-    printf("Dropped table %s\n", TABLE);
-
+cleanup:
+    /* Guaranteed cleanup: drop the table if it was created, then close. */
+    if (table_created) {
+        if (mongreldb_drop_table(db, table) == MDB_OK) {
+            printf("Dropped table %s\n", table);
+        } else {
+            fprintf(stderr, "drop_table failed: %s\n", mongreldb_last_error(db));
+        }
+    }
     mongreldb_close(db);
     return 0;
 }
