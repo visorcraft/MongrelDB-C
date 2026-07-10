@@ -101,31 +101,53 @@ int main(void) {
     }
 
     /* 3. Create a table. Each column has a stable numeric id, a name, a type,
-     *    and flags. The first column is the primary key. */
+     *    and flags. The first column is the primary key.
+     *
+     *    Two optional fields extend the schema:
+     *      - enum_variants / enum_variants_len: a fixed set of allowed
+     *        values for a text column (server-enforced on commit).
+     *      - default_value: a string constant applied when a row omits
+     *        the column.
+     *    Both are NULL/0 = absent and are dropped from the wire JSON when
+     *    not set, so the existing positional form stays valid. */
+    static const char *const kStatusVariants[] = {"active", "inactive", "paused"};
     mongreldb_column cols[] = {
-        {1, "id",       "int64",   /*primary_key=*/1, /*nullable=*/0},
-        {2, "customer", "varchar", /*primary_key=*/0, /*nullable=*/0},
-        {3, "amount",   "float64", /*primary_key=*/0, /*nullable=*/0},
+        {1, "id",       "int64",   /*primary_key=*/1, /*nullable=*/0,
+            /*enum_variants=*/NULL, /*enum_variants_len=*/0,
+            /*default_value=*/NULL},
+        {2, "customer", "varchar", /*primary_key=*/0, /*nullable=*/0,
+            /*enum_variants=*/NULL, /*enum_variants_len=*/0,
+            /*default_value=*/NULL},
+        {3, "amount",   "float64", /*primary_key=*/0, /*nullable=*/0,
+            /*enum_variants=*/NULL, /*enum_variants_len=*/0,
+            /*default_value=*/"0.0"},
+        {4, "status",   "varchar", /*primary_key=*/0, /*nullable=*/0,
+            /*enum_variants=*/kStatusVariants, /*enum_variants_len=*/3,
+            /*default_value=*/"active"},
     };
     int64_t tid = 0;
-    if (mongreldb_create_table(db, "orders", cols, 3, &tid) != MDB_OK) {
+    if (mongreldb_create_table(db, "orders", cols, 4, &tid) != MDB_OK) {
         fprintf(stderr, "create table: %s\n", mongreldb_last_error(db));
         return 1;
     }
 
-    /* 4. Insert rows. Cells pair column id + value. */
+    /* 4. Insert rows. Cells pair column id + value. The status column is
+     *    constrained to {"active","inactive","paused"}; "active" matches the
+     *    default_value. */
     mongreldb_input_cell r1[] = {
         {1, {MDB_VAL_INT64,  .v.i64 = 1}},
         {2, {MDB_VAL_STRING, .v.str = "Alice"}},
         {3, {MDB_VAL_DOUBLE, .v.f64 = 99.5}},
+        {4, {MDB_VAL_STRING, .v.str = "active"}},
     };
     mongreldb_input_cell r2[] = {
         {1, {MDB_VAL_INT64,  .v.i64 = 2}},
         {2, {MDB_VAL_STRING, .v.str = "Bob"}},
         {3, {MDB_VAL_DOUBLE, .v.f64 = 150.0}},
+        {4, {MDB_VAL_STRING, .v.str = "inactive"}},
     };
-    mongreldb_put(db, "orders", r1, 3, NULL);
-    mongreldb_put(db, "orders", r2, 3, NULL);
+    mongreldb_put(db, "orders", r1, 4, NULL);
+    mongreldb_put(db, "orders", r2, 4, NULL);
 
     /* 5. Query with a native index condition. The range index serves this in
      *    sub-millisecond. Projection selects only column ids 1 and 2. */
@@ -173,6 +195,8 @@ You should see the row count of 2.
 | `mongreldb_connect(url)` | Builds an HTTP client targeting one daemon. One per thread. |
 | `mongreldb_health(c)` | GET `/health`; returns `MDB_OK` when the daemon answers. Always check before real work. |
 | `mongreldb_create_table(c, name, cols, n, &tid)` | POST `/kit/create_table`. Column `id`s are the on-wire identifiers; use them everywhere else. |
+| `col.enum_variants / enum_variants_len` | Optional. Constrains a text column to a fixed value set; server-enforced on commit, surfaces as `MDB_ERR_CONFLICT` on a row outside the set. NULL/0 = absent. |
+| `col.default_value` | Optional. Default value string for the column. NULL = absent. The server's `default_expr` field name is also accepted. |
 | `mongreldb_put(c, table, cells, n, key)` | Single-op transaction: POST `/kit/txn` with one `put` op. `cells` is flattened to `[col_id, val, ...]`. |
 | `mongreldb_query(...)` | Builds a `/kit/query` body. Conditions push down to native indexes. |
 | `.projection = {1,2}` | Server returns only those column ids, saving bandwidth. |
@@ -203,6 +227,11 @@ row retrieval.
 `--auth-token` or `--auth-users`, every call fails with `MDB_ERR_AUTH` unless
 you use `mongreldb_connect_with_token(...)` or
 `mongreldb_connect_with_basic_auth(...)`. See [auth.md](auth.md).
+
+**Assuming `enum_variants` is checked client-side.** The C client only emits
+the constraint in the wire JSON; the engine enforces it on `put` / `commit` and
+returns `MDB_ERR_CONFLICT` for any value outside the set. Validate at the edge
+if you need faster feedback.
 
 ## Next steps
 

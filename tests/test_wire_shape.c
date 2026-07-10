@@ -8,6 +8,7 @@
 #include "mongreldb.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Declared static in mongreldb.c; redeclared here so we can test it directly.

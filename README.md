@@ -179,6 +179,37 @@ if (res.truncated) {
 }
 ```
 
+## Schema constraints
+
+Two optional fields on `mongreldb_column` let you constrain what goes into a
+column at create time. Both are omitted from the wire JSON when left unset, so
+existing schemas are unaffected.
+
+```c
+/* A varchar column whose values must come from this fixed set.
+ * The wire emit is "enum_variants": ["a","b","c"]. */
+static const char *const kStatusVariants[] = {"active", "inactive", "paused"};
+mongreldb_column cols[] = {
+    {1, "id",         "int64",   /*primary_key=*/1, /*nullable=*/0,
+        /*enum_variants=*/NULL, /*enum_variants_len=*/0,
+        /*default_value=*/NULL},
+    {2, "customer",   "varchar", /*primary_key=*/0, /*nullable=*/0,
+        /*enum_variants=*/NULL, /*enum_variants_len=*/0,
+        /*default_value=*/NULL},
+    {3, "status",     "varchar", /*primary_key=*/0, /*nullable=*/0,
+        /*enum_variants=*/kStatusVariants, /*enum_variants_len=*/3,
+        /*default_value=*/"active"},
+};
+```
+
+`enum_variants` is a `const char *const *` plus a length — both NULL/0 means
+"absent". `default_value` is a single string constant; NULL means "absent". The
+constraint is enforced server-side, so a row whose value falls outside the
+listed variants surfaces as `MDB_ERR_CONFLICT` on `put`/`commit`.
+
+The matching `default_expr` server-side alias is also accepted when the JSON is
+authored by hand.
+
 ## SQL
 
 ```c

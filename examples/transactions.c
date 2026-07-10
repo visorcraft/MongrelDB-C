@@ -15,6 +15,12 @@
  * fourth put and commits it twice with the SAME idempotency key: the
  * daemon replays the first commit's result so the second commit is a
  * no-op. The table is dropped at the end (even on error).
+ *
+ * The "status" column is an enum ("active" | "inactive" | "paused") with a
+ * default of "active"; the "score" column has a numeric default of "0.0".
+ * These are emitted as "enum_variants" and "default_value" keys in the
+ * /kit/create_table wire JSON, and the enum constraint is enforced at
+ * commit time.
  */
 
 #include <mongreldb.h>
@@ -31,20 +37,32 @@
 /* Column schema shared across all examples:
  *   col 1 = id (int64, primary key)
  *   col 2 = name (varchar)
- *   col 3 = score (float64)
+ *   col 3 = score (float64, default "0.0")
+ *   col 4 = status (varchar, enum ["active","inactive","paused"], default "active")
  */
+static const char *const kStatusVariants[] = {"active", "inactive", "paused"};
 static const mongreldb_column kCols[] = {
-    {1, "id", "int64", /*primary_key=*/1, /*nullable=*/0},
-    {2, "name", "varchar", /*primary_key=*/0, /*nullable=*/0},
-    {3, "score", "float64", /*primary_key=*/0, /*nullable=*/0},
+    {1, "id",     "int64",   /*primary_key=*/1, /*nullable=*/0,
+        /*enum_variants=*/NULL,        /*enum_variants_len=*/0,
+        /*default_value=*/NULL},
+    {2, "name",   "varchar", /*primary_key=*/0, /*nullable=*/0,
+        /*enum_variants=*/NULL,        /*enum_variants_len=*/0,
+        /*default_value=*/NULL},
+    {3, "score",  "float64", /*primary_key=*/0, /*nullable=*/0,
+        /*enum_variants=*/NULL,        /*enum_variants_len=*/0,
+        /*default_value=*/"0.0"},
+    {4, "status", "varchar", /*primary_key=*/0, /*nullable=*/0,
+        /*enum_variants=*/kStatusVariants, /*enum_variants_len=*/3,
+        /*default_value=*/"active"},
 };
 
-/* Build a three-cell input row as a C99 compound literal. */
-#define ROW(id, name, score)                                                    \
+/* Build a four-cell input row as a C99 compound literal. */
+#define ROW(id, name, score, status)                                            \
     ((const mongreldb_input_cell[]){                                            \
         {1, {MDB_VAL_INT64,  .v.i64 = (id)}},                                   \
         {2, {MDB_VAL_STRING, .v.str = (name)}},                                 \
         {3, {MDB_VAL_DOUBLE, .v.f64 = (score)}},                                \
+        {4, {MDB_VAL_STRING, .v.str = (status)}},                               \
     })
 
 /* Build a PUT op referencing the row array. Uses designated initializers so
@@ -58,7 +76,7 @@ static const mongreldb_column kCols[] = {
         .type = MDB_OP_PUT,                                                     \
         .table = g_table,                                                       \
         .cells = (row_cs),                                                      \
-        .cell_count = 3,                                                        \
+        .cell_count = 4,                                                        \
     })
 
 /* The per-run table name: filled in by main() and referenced by the PUT_OP
@@ -102,18 +120,19 @@ int main(void) {
 
     /* 2. Create the table. */
     int64_t tid = 0;
-    if (mongreldb_create_table(db, g_table, kCols, 3, &tid) != MDB_OK) {
+    if (mongreldb_create_table(db, g_table, kCols, 4, &tid) != MDB_OK) {
         fprintf(stderr, "create_table failed: %s\n", mongreldb_last_error(db));
         goto cleanup;
     }
     table_created = 1;
     printf("Created table %s (id %lld)\n", g_table, (long long)tid);
 
-    /* 3. Stage three puts and commit them atomically. */
+    /* 3. Stage three puts and commit them atomically. Each status is one of
+     *    the allowed enum variants - the server enforces this at commit. */
     mongreldb_op batch1[] = {
-        PUT_OP(ROW(1, "Alice", 95.5)),
-        PUT_OP(ROW(2, "Bob",   82.0)),
-        PUT_OP(ROW(3, "Carol", 78.3)),
+        PUT_OP(ROW(1, "Alice", 95.5, "active")),
+        PUT_OP(ROW(2, "Bob",   82.0, "inactive")),
+        PUT_OP(ROW(3, "Carol", 78.3, "paused")),
     };
     if (mongreldb_commit(db, batch1, 3, NULL) != MDB_OK) {
         fprintf(stderr, "commit (3 puts) failed: %s\n", mongreldb_last_error(db));
@@ -132,7 +151,7 @@ int main(void) {
     /* 5. Idempotent retry: stage a fourth put and commit twice with the
      *    same idempotency key. The second commit is replayed as a no-op. */
     mongreldb_op batch2[] = {
-        PUT_OP(ROW(4, "Dave", 60.0)),
+        PUT_OP(ROW(4, "Dave", 60.0, "active")),
     };
     if (mongreldb_commit(db, batch2, 1, txn_key) != MDB_OK) {
         fprintf(stderr, "commit (4th put, first attempt) failed: %s\n", mongreldb_last_error(db));

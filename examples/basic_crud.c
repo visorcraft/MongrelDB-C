@@ -13,6 +13,11 @@
  * Creates a table, inserts three rows, counts them, queries all rows, upserts
  * (updates) one row by primary key, deletes one row, then drops the table.
  * Progress is printed at every step.
+ *
+ * The "status" column is an enum ("active" | "inactive" | "paused") with a
+ * default of "active"; the "score" column has a numeric default of "0.0".
+ * These are emitted as "enum_variants" and "default_value" keys in the
+ * /kit/create_table wire JSON.
  */
 
 #include <mongreldb.h>
@@ -29,22 +34,34 @@
 /* Column schema shared across all examples:
  *   col 1 = id (int64, primary key)
  *   col 2 = name (varchar)
- *   col 3 = score (float64)
+ *   col 3 = score (float64, default "0.0")
+ *   col 4 = status (varchar, enum ["active","inactive","paused"], default "active")
  */
+static const char *const kStatusVariants[] = {"active", "inactive", "paused"};
 static const mongreldb_column kCols[] = {
-    {1, "id", "int64", /*primary_key=*/1, /*nullable=*/0},
-    {2, "name", "varchar", /*primary_key=*/0, /*nullable=*/0},
-    {3, "score", "float64", /*primary_key=*/0, /*nullable=*/0},
+    {1, "id",     "int64",   /*primary_key=*/1, /*nullable=*/0,
+        /*enum_variants=*/NULL,        /*enum_variants_len=*/0,
+        /*default_value=*/NULL},
+    {2, "name",   "varchar", /*primary_key=*/0, /*nullable=*/0,
+        /*enum_variants=*/NULL,        /*enum_variants_len=*/0,
+        /*default_value=*/NULL},
+    {3, "score",  "float64", /*primary_key=*/0, /*nullable=*/0,
+        /*enum_variants=*/NULL,        /*enum_variants_len=*/0,
+        /*default_value=*/"0.0"},
+    {4, "status", "varchar", /*primary_key=*/0, /*nullable=*/0,
+        /*enum_variants=*/kStatusVariants, /*enum_variants_len=*/3,
+        /*default_value=*/"active"},
 };
 
-/* Build a three-cell input row as a C99 compound literal. Cast to
+/* Build a four-cell input row as a C99 compound literal. Cast to
  * (const mongreldb_input_cell *) so it can be passed directly to the count-
  * taking put/upsert helpers. */
-#define ROW(id, name, score)                                                    \
+#define ROW(id, name, score, status)                                            \
     ((const mongreldb_input_cell[]){                                            \
         {1, {MDB_VAL_INT64,  .v.i64 = (id)}},                                   \
         {2, {MDB_VAL_STRING, .v.str = (name)}},                                 \
         {3, {MDB_VAL_DOUBLE, .v.f64 = (score)}},                                \
+        {4, {MDB_VAL_STRING, .v.str = (status)}},                               \
     })
 
 /* Print every cell of a query result. */
@@ -101,23 +118,23 @@ int main(void) {
 
     /* 2. Create the table. */
     int64_t tid = 0;
-    if (mongreldb_create_table(db, table, kCols, 3, &tid) != MDB_OK) {
+    if (mongreldb_create_table(db, table, kCols, 4, &tid) != MDB_OK) {
         fprintf(stderr, "create_table failed: %s\n", mongreldb_last_error(db));
         goto cleanup;
     }
     table_created = 1;
     printf("Created table %s (id %lld)\n", table, (long long)tid);
 
-    /* 3. Insert three rows. */
-    if (mongreldb_put(db, table, ROW(1, "Alice", 95.5), 3, NULL) != MDB_OK) {
+    /* 3. Insert three rows. Each status is one of the allowed enum variants. */
+    if (mongreldb_put(db, table, ROW(1, "Alice", 95.5, "active"),   4, NULL) != MDB_OK) {
         fprintf(stderr, "put failed: %s\n", mongreldb_last_error(db));
         goto cleanup;
     }
-    if (mongreldb_put(db, table, ROW(2, "Bob", 82.0), 3, NULL) != MDB_OK) {
+    if (mongreldb_put(db, table, ROW(2, "Bob",   82.0, "inactive"), 4, NULL) != MDB_OK) {
         fprintf(stderr, "put failed: %s\n", mongreldb_last_error(db));
         goto cleanup;
     }
-    if (mongreldb_put(db, table, ROW(3, "Carol", 78.3), 3, NULL) != MDB_OK) {
+    if (mongreldb_put(db, table, ROW(3, "Carol", 78.3, "paused"),   4, NULL) != MDB_OK) {
         fprintf(stderr, "put failed: %s\n", mongreldb_last_error(db));
         goto cleanup;
     }
@@ -140,18 +157,20 @@ int main(void) {
     printf("Query returned %zu rows:\n", res.count);
     print_result(&res);
 
-    /* 6. Upsert (update) Alice's score. update_cells supplies the values
-     *    written on a primary-key conflict. */
+    /* 6. Upsert (update) Alice's score and mark her paused. update_cells
+     *    supplies the values written on a primary-key conflict. */
     mongreldb_input_cell up[] = {
         {1, {MDB_VAL_INT64,  .v.i64 = 1}},
         {2, {MDB_VAL_STRING, .v.str = "Alice"}},
         {3, {MDB_VAL_DOUBLE, .v.f64 = 100.0}},
+        {4, {MDB_VAL_STRING, .v.str = "paused"}},
     };
     mongreldb_input_cell upd[] = {
         {2, {MDB_VAL_STRING, .v.str = "Alice"}},
         {3, {MDB_VAL_DOUBLE, .v.f64 = 100.0}},
+        {4, {MDB_VAL_STRING, .v.str = "paused"}},
     };
-    if (mongreldb_upsert(db, table, up, 3, upd, 2, NULL) != MDB_OK) {
+    if (mongreldb_upsert(db, table, up, 4, upd, 3, NULL) != MDB_OK) {
         fprintf(stderr, "upsert failed: %s\n", mongreldb_last_error(db));
         goto cleanup;
     }
