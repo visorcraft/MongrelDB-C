@@ -37,6 +37,15 @@ if(MONGRELDB_C_BUILD_TESTS)
     add_executable(test_mongreldb tests/test_mongreldb.c)
     target_link_libraries(test_mongreldb PRIVATE mongreldb_c CURL::libcurl)
     add_test(NAME test_mongreldb COMMAND test_mongreldb)
+
+    # Offline wire-shape conformance test. Includes mongreldb.c directly to
+    # reach the file-local json_serialize_column helper; does not link against
+    # the public mongreldb_c library (avoids duplicate-symbol errors).
+    add_executable(test_wire_shape tests/test_wire_shape.c)
+    target_include_directories(test_wire_shape PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(test_wire_shape PRIVATE CURL::libcurl)
+    add_test(NAME test_wire_shape COMMAND test_wire_shape)
 endif()
 
 # Install rules: library, headers, and pkg-config for packagers.

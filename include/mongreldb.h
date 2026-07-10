@@ -162,6 +162,13 @@ typedef struct {
     const char *ty;       /* type: "int64", "varchar", "float64", "bool", ... */
     int primary_key;      /* non-zero if this is the PK column */
     int nullable;         /* non-zero to allow NULLs */
+    /* Optional: list of allowed values for a text column. NULL/0 = absent.
+     * When present, the wire emit is "enum_variants": ["v1","v2",...]. */
+    const char *const *enum_variants;
+    size_t enum_variants_len;
+    /* Optional: default value for the column. NULL = absent. The wire emit
+     * is "default_value": "<value>". */
+    const char *default_value;
 } mongreldb_column;
 
 /* A staged operation in a transaction. type selects the arm; the fields used

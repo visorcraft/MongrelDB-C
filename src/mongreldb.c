@@ -242,6 +242,42 @@ static void json_serialize_cells(sbuf *out,
     sbuf_append_char(out, ']');
 }
 
+/* Build the JSON object for a single column as sent in /kit/create_table.
+ * Extracted from mongreldb_create_table so the wire shape can be unit-tested
+ * without a live daemon. Optional fields (enum_variants, default_value) are
+ * omitted when their pointer is NULL or, for enum_variants, when the length
+ * is zero. */
+static void json_serialize_column(sbuf *out, const mongreldb_column *col) {
+    sbuf_append_char(out, '{');
+    sbuf_append_str(out, "\"id\":");
+    char ibuf[32];
+    snprintf(ibuf, sizeof(ibuf), "%lld", (long long)col->id);
+    sbuf_append_str(out, ibuf);
+    sbuf_append_str(out, ",\"name\":");
+    json_escape(out, col->name ? col->name : "");
+    sbuf_append_str(out, ",\"ty\":");
+    json_escape(out, col->ty ? col->ty : "");
+    sbuf_append_str(out, ",\"primary_key\":");
+    sbuf_append_str(out, col->primary_key ? "true" : "false");
+    sbuf_append_str(out, ",\"nullable\":");
+    sbuf_append_str(out, col->nullable ? "true" : "false");
+    if (col->enum_variants && col->enum_variants_len > 0) {
+        sbuf_append_str(out, ",\"enum_variants\":[");
+        for (size_t k = 0; k < col->enum_variants_len; k++) {
+            if (k > 0) {
+                sbuf_append_char(out, ',');
+            }
+            json_escape(out, col->enum_variants[k] ? col->enum_variants[k] : "");
+        }
+        sbuf_append_char(out, ']');
+    }
+    if (col->default_value) {
+        sbuf_append_str(out, ",\"default_value\":");
+        json_escape(out, col->default_value);
+    }
+    sbuf_append_char(out, '}');
+}
+
 /* ── Minimal JSON parser ───────────────────────────────────────────────── */
 /*
  * A tiny recursive-descent parser over the response body. It builds no tree;
@@ -1170,20 +1206,7 @@ int mongreldb_create_table(mongreldb_client *c,
         if (i > 0) {
             sbuf_append_char(&body, ',');
         }
-        sbuf_append_char(&body, '{');
-        sbuf_append_str(&body, "\"id\":");
-        char ibuf[32];
-        snprintf(ibuf, sizeof(ibuf), "%lld", (long long)columns[i].id);
-        sbuf_append_str(&body, ibuf);
-        sbuf_append_str(&body, ",\"name\":");
-        json_escape(&body, columns[i].name ? columns[i].name : "");
-        sbuf_append_str(&body, ",\"ty\":");
-        json_escape(&body, columns[i].ty ? columns[i].ty : "");
-        sbuf_append_str(&body, ",\"primary_key\":");
-        sbuf_append_str(&body, columns[i].primary_key ? "true" : "false");
-        sbuf_append_str(&body, ",\"nullable\":");
-        sbuf_append_str(&body, columns[i].nullable ? "true" : "false");
-        sbuf_append_char(&body, '}');
+        json_serialize_column(&body, &columns[i]);
     }
     sbuf_append_str(&body, "]}");
 
