@@ -790,6 +790,10 @@ static int do_request(mongreldb_client *c, const char *method,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, c->timeout_seconds);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, c->timeout_seconds);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    /* Restrict the protocols libcurl will follow to http and https so that a
+     * caller-supplied base URL cannot be abused for SSRF via other schemes
+     * (e.g. file:///etc/passwd). */
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
     /* Cap the response body at 256 MB. The write callback also enforces this
      * for chunked transfers where the size is unknown ahead of time. */
     curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE,
