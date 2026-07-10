@@ -681,9 +681,14 @@ TEST(test_idempotency_key) {
     mongreldb_column cols[] = { int_col(1, "id", 1) };
     fresh_table("c_idem", cols, 1);
 
+    /* Use a unique idempotency key per run so prior test runs on the same
+     * server don't replay stale results. */
+    char idem_key[64];
+    snprintf(idem_key, sizeof(idem_key), "idem-key-%ld", (long)time(NULL));
+
     mongreldb_input_cell r[] = { icell_i64(1, 1) };
     /* First commit with the key succeeds. */
-    CHECK_RC(mongreldb_put(g_client, "c_idem", r, 1, "idem-key-1"));
+    CHECK_RC(mongreldb_put(g_client, "c_idem", r, 1, idem_key));
     int64_t n = -1;
     CHECK_RC(mongreldb_count(g_client, "c_idem", &n));
     CHECK(n == 1, "expected 1 row, got %lld", (long long)n);
@@ -691,7 +696,7 @@ TEST(test_idempotency_key) {
     /* A second put with a DIFFERENT value but the SAME key replays the
      * original result; the row count stays at 1. */
     mongreldb_input_cell r2[] = { icell_i64(1, 2) };
-    mongreldb_put(g_client, "c_idem", r2, 1, "idem-key-1");
+    mongreldb_put(g_client, "c_idem", r2, 1, idem_key);
     CHECK_RC(mongreldb_count(g_client, "c_idem", &n));
     CHECK(n == 1, "expected 1 row after duplicate idempotent commit, got %lld",
           (long long)n);
