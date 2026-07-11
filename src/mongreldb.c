@@ -1228,13 +1228,25 @@ int mongreldb_create_table(mongreldb_client *c,
         c, name, columns, column_count, NULL, out_table_id);
 }
 
-static int decode_history_retention(mongreldb_client *c,
-                                    mongreldb_history_retention *out) {
+static const char *history_retention_path(void) { return "/history/retention"; }
+static const char *history_retention_method(void) { return "PUT"; }
+
+/* Build the PUT /history/retention request body. Exposed for offline wire-shape
+ * tests; returns 0 on success, -1 if the buffer is too small. */
+static int history_retention_set_body(uint64_t epochs, char *out, size_t out_size) {
+    int n = snprintf(out, out_size, "{\"history_retention_epochs\":%llu}",
+                     (unsigned long long)epochs);
+    if (n < 0 || (size_t)n >= out_size) {
+        return -1;
+    }
+    return 0;
+}
+
+static int history_retention_decode_json(const char *json, size_t len,
+                                         mongreldb_history_retention *out) {
     int64_t epochs = 0, earliest = 0;
-    if (!json_get_number(c->recv.data, c->recv.len,
-                         "history_retention_epochs", NULL, &epochs) ||
-        !json_get_number(c->recv.data, c->recv.len,
-                         "earliest_retained_epoch", NULL, &earliest)) {
+    if (!json_get_number(json, len, "history_retention_epochs", NULL, &epochs) ||
+        !json_get_number(json, len, "earliest_retained_epoch", NULL, &earliest)) {
         return MDB_ERR_QUERY;
     }
     if (out) {
@@ -1244,19 +1256,25 @@ static int decode_history_retention(mongreldb_client *c,
     return MDB_OK;
 }
 
+static int decode_history_retention(mongreldb_client *c,
+                                    mongreldb_history_retention *out) {
+    return history_retention_decode_json(c->recv.data, c->recv.len, out);
+}
+
 int mongreldb_history_retention_get(mongreldb_client *c,
                                     mongreldb_history_retention *out) {
-    int rc = c_get(c, "/history/retention");
-    return rc == MDB_OK ? decode_history_retention(c, out) : rc;
+    int rc = c_get(c, history_retention_path());
+    return rc == MDB_OK ? history_retention_decode_json(c->recv.data, c->recv.len, out) : rc;
 }
 
 int mongreldb_history_retention_set(mongreldb_client *c, uint64_t epochs,
                                     mongreldb_history_retention *out) {
     char body[96];
-    snprintf(body, sizeof(body), "{\"history_retention_epochs\":%llu}",
-             (unsigned long long)epochs);
-    int rc = c_put(c, "/history/retention", body);
-    return rc == MDB_OK ? decode_history_retention(c, out) : rc;
+    if (history_retention_set_body(epochs, body, sizeof(body)) != 0) {
+        return MDB_ERR_NOMEM;
+    }
+    int rc = c_put(c, history_retention_path(), body);
+    return rc == MDB_OK ? history_retention_decode_json(c->recv.data, c->recv.len, out) : rc;
 }
 
 int mongreldb_create_table_with_constraints_json(

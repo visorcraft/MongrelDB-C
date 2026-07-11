@@ -21,6 +21,7 @@
 
 #include "mongreldb.h"
 
+#include <curl/curl.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -295,6 +296,52 @@ static void teardown_daemon(void) {
             SKIP("no mongreldb-server available");                             \
         }                                                                      \
     } while (0)
+
+/* ── Raw HTTP helpers (used where the public client does not expose headers)
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static size_t epoch_header_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    size_t total = size * nmemb;
+    uint64_t *out = (uint64_t *)userdata;
+    const char *prefix = "x-mongreldb-current-epoch:";
+    size_t prefix_len = strlen(prefix);
+    if (total >= prefix_len && strncasecmp(ptr, prefix, prefix_len) == 0) {
+        const char *p = ptr + prefix_len;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        *out = (uint64_t)strtoull(p, NULL, 10);
+    }
+    return total;
+}
+
+static size_t discard_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+    (void)ptr;
+    (void)userdata;
+    return size * nmemb;
+}
+
+static uint64_t fetch_current_epoch(const char *url) {
+    char full[256];
+    if (snprintf(full, sizeof(full), "%s/wal/stream?since=0", url) >= (int)sizeof(full)) {
+        return 0;
+    }
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        return 0;
+    }
+    uint64_t epoch = 0;
+    curl_easy_setopt(curl, CURLOPT_URL, full);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, discard_write_cb);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, epoch_header_cb);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &epoch);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+    (void)curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+    return epoch;
+}
 
 /* ── Helpers ───────────────────────────────────────────────────────────── */
 
@@ -702,6 +749,59 @@ TEST(test_idempotency_key) {
           (long long)n);
 }
 
+TEST(test_history_retention) {
+    SKIP_IF_NO_DAEMON();
+
+    /* Set a large retention window before writing. */
+    mongreldb_history_retention set_ret = {0};
+    CHECK_RC(mongreldb_history_retention_set(g_client, 1000, &set_ret));
+    CHECK(set_ret.history_retention_epochs == 1000,
+          "expected retention 1000, got %llu",
+          (unsigned long long)set_ret.history_retention_epochs);
+
+    mongreldb_history_retention get_ret = {0};
+    CHECK_RC(mongreldb_history_retention_get(g_client, &get_ret));
+    CHECK(get_ret.history_retention_epochs == 1000,
+          "expected getter retention 1000, got %llu",
+          (unsigned long long)get_ret.history_retention_epochs);
+
+    mongreldb_column cols[] = { int_col(1, "id", 1), int_col(2, "val", 0) };
+    fresh_table("c_retention", cols, 2);
+
+    mongreldb_input_cell r1[] = { icell_i64(1, 1), icell_i64(2, 7) };
+    CHECK_RC(mongreldb_put(g_client, "c_retention", r1, 2, NULL));
+
+    uint64_t after_insert = fetch_current_epoch(g_url);
+    CHECK(after_insert > 0, "failed to fetch current epoch after insert");
+
+    mongreldb_input_cell r2[] = { icell_i64(1, 1), icell_i64(2, 42) };
+    CHECK_RC(mongreldb_put(g_client, "c_retention", r2, 2, NULL));
+
+    uint64_t after_update = fetch_current_epoch(g_url);
+    CHECK(after_update > after_insert,
+          "expected epoch to advance after update (%llu <= %llu)",
+          (unsigned long long)after_update, (unsigned long long)after_insert);
+
+    /* The pre-update value must still be readable at the insert epoch. */
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+             "SELECT id, val FROM c_retention AS OF EPOCH %llu WHERE id = 1",
+             (unsigned long long)(after_update - 1));
+    const char *body = NULL;
+    CHECK_RC(mongreldb_sql(g_client, sql, &body));
+    CHECK(body != NULL && strstr(body, "\"val\":7") != NULL,
+          "AS OF EPOCH query did not return old value 7: %s",
+          body ? body : "(null)");
+
+    /* The current value is the updated one. */
+    CHECK_RC(mongreldb_sql(g_client,
+                           "SELECT id, val FROM c_retention WHERE id = 1",
+                           &body));
+    CHECK(body != NULL && strstr(body, "\"val\":42") != NULL,
+          "current query did not return updated value 42: %s",
+          body ? body : "(null)");
+}
+
 /* ── Main ──────────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -721,6 +821,7 @@ int main(void) {
     RUN(test_schema_for);
     RUN(test_error_not_found);
     RUN(test_idempotency_key);
+    RUN(test_history_retention);
 
     teardown_daemon();
 

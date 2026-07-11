@@ -123,6 +123,27 @@ mongreldb_client *db = mongreldb_connect_with_basic_auth(
 
 A token takes precedence over basic auth if both are supplied.
 
+## History retention
+
+`mongreldb_history_retention_get` and `mongreldb_history_retention_set` expose
+`GET /history/retention` and `PUT /history/retention`. They inspect and change
+the rolling MVCC history window, measured in committed epochs:
+
+```c
+mongreldb_history_retention ret;
+
+int rc = mongreldb_history_retention_get(db, &ret);
+printf("retain %llu epochs; earliest retained epoch %llu\n",
+       (unsigned long long)ret.history_retention_epochs,
+       (unsigned long long)ret.earliest_retained_epoch);
+
+rc = mongreldb_history_retention_set(db, 4096, &ret);
+```
+
+When catalog authentication is enabled, both routes require the `ADMIN`
+permission. Increasing the retention window cannot restore history that was
+already pruned; the wider guarantee only applies from the current epoch forward.
+
 ## Batch transactions
 
 Operations are staged locally and committed atomically. The engine enforces
@@ -184,37 +205,38 @@ if (res.truncated) {
 
 ## Schema constraints
 
-Two optional fields on `mongreldb_column` let you constrain what goes into a
-column at create time. Both are omitted from the wire JSON when left unset, so
-existing schemas are unaffected.
+Optional fields on `mongreldb_column` let you constrain what goes into a column
+at create time. They are omitted from the wire JSON when left unset, so existing
+schemas are unaffected.
 
 ```c
 /* A varchar column whose values must come from this fixed set.
  * The wire emit is "enum_variants": ["a","b","c"]. */
 static const char *const kStatusVariants[] = {"active", "inactive", "paused"};
 mongreldb_column cols[] = {
-    {1, "id",         "int64",   /*primary_key=*/1, /*nullable=*/0,
-        /*enum_variants=*/NULL, /*enum_variants_len=*/0,
-        /*default_value=*/NULL},
-    {2, "customer",   "varchar", /*primary_key=*/0, /*nullable=*/0,
-        /*enum_variants=*/NULL, /*enum_variants_len=*/0,
-        /*default_value=*/NULL},
-    {3, "status",     "varchar", /*primary_key=*/0, /*nullable=*/0,
-        /*enum_variants=*/kStatusVariants, /*enum_variants_len=*/3,
-        /*default_value=*/"active"},
+    {1, "id",         "int64",   /*primary_key=*/1, /*nullable=*/0},
+    {2, "customer",   "varchar", /*primary_key=*/0, /*nullable=*/0},
+    {3, "created_at", "timestamp_nanos", /*primary_key=*/0, /*nullable=*/0,
+        .default_expr = "now"},
+    {4, "status",     "varchar", /*primary_key=*/0, /*nullable=*/0,
+        .enum_variants = kStatusVariants, .enum_variants_len = 3,
+        .default_value_json = "\"active\""},
+    {5, "attempts",   "int64",   /*primary_key=*/0, /*nullable=*/0,
+        .default_value_json = "0"},
+    {6, "enabled",    "bool",    /*primary_key=*/0, /*nullable=*/0,
+        .default_value_json = "true"},
 };
 ```
 
 `enum_variants` is a `const char *const *` plus a length; both NULL/0 means
-"absent". `default_value_json` sends a caller-validated raw JSON scalar and
-`default_expr` sends `"now"` or `"uuid"`; the legacy `default_value` sends a
-string. Dynamic expressions take precedence. Because these fields extend the
-public `mongreldb_column` struct, rebuild consumers when upgrading. The
-constraint is enforced server-side, so a row whose value falls outside the
-listed variants surfaces as `MDB_ERR_CONFLICT` on `put`/`commit`.
-
-The matching `default_expr` server-side alias is also accepted when the JSON is
-authored by hand.
+"absent". `default_value_json` sends a caller-validated raw JSON scalar such as
+`"\"draft\""`, `"7"`, `"true"`, or `"null"`, preserving the literal JSON type on
+the wire. `default_expr` sends a dynamic default such as `"now"` or `"uuid"` and
+takes precedence over static defaults. The legacy `default_value` field still
+sends a plain string when used. Because these fields extend the public
+`mongreldb_column` struct, rebuild consumers when upgrading. The constraint is
+enforced server-side, so a row whose value falls outside the listed variants
+surfaces as `MDB_ERR_CONFLICT` on `put`/`commit`.
 
 Table CHECKs use the additive constraints overload. The JSON is the daemon's
 native `constraints` object:
@@ -309,6 +331,8 @@ default:
 | `mongreldb_table_names(c, &names, &count)` | List table names |
 | `mongreldb_create_table(c, name, cols, n, &tid)` | Create a table; column descriptors may carry enum/default fields |
 | `mongreldb_create_table_with_constraints_json(c, name, cols, n, json, &tid)` | Create a table with native `constraints` JSON (including CHECKs) |
+| `mongreldb_history_retention_get(c, &ret)` | Inspect the MVCC history retention window |
+| `mongreldb_history_retention_set(c, epochs, &ret)` | Resize the MVCC history retention window |
 | `mongreldb_drop_table(c, name)` | Drop a table |
 | `mongreldb_count(c, table, &n)` | Row count |
 | `mongreldb_put(c, table, cells, n, key)` | Insert a row |

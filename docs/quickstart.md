@@ -103,37 +103,37 @@ int main(void) {
     /* 3. Create a table. Each column has a stable numeric id, a name, a type,
      *    and flags. The first column is the primary key.
      *
-     *    Two optional fields extend the schema:
+     *    Optional schema extensions (all NULL/0 = absent):
      *      - enum_variants / enum_variants_len: a fixed set of allowed
      *        values for a text column (server-enforced on commit).
-     *      - default_value: a string constant applied when a row omits
-     *        the column.
-     *    Both are NULL/0 = absent and are dropped from the wire JSON when
-     *    not set, so the existing positional form stays valid. */
+     *      - default_value_json: a caller-validated raw JSON scalar such as
+     *        "\"draft\"", "7", "true", or "null". The literal JSON type is
+     *        preserved on the wire.
+     *      - default_expr: a dynamic default such as "now" or "uuid". It takes
+     *        precedence over static default-value fields.
+     *      - default_value: legacy string-only default.
+     *    All are dropped from the wire JSON when not set. */
     static const char *const kStatusVariants[] = {"active", "inactive", "paused"};
     mongreldb_column cols[] = {
-        {1, "id",       "int64",   /*primary_key=*/1, /*nullable=*/0,
-            /*enum_variants=*/NULL, /*enum_variants_len=*/0,
-            /*default_value=*/NULL},
-        {2, "customer", "varchar", /*primary_key=*/0, /*nullable=*/0,
-            /*enum_variants=*/NULL, /*enum_variants_len=*/0,
-            /*default_value=*/NULL},
-        {3, "amount",   "float64", /*primary_key=*/0, /*nullable=*/0,
-            /*enum_variants=*/NULL, /*enum_variants_len=*/0,
-            /*default_value=*/"0.0"},
-        {4, "status",   "varchar", /*primary_key=*/0, /*nullable=*/0,
-            /*enum_variants=*/kStatusVariants, /*enum_variants_len=*/3,
-            /*default_value=*/"active"},
+        {1, "id",         "int64",   /*primary_key=*/1, /*nullable=*/0},
+        {2, "customer",   "varchar", /*primary_key=*/0, /*nullable=*/0},
+        {3, "created_at", "timestamp_nanos", /*primary_key=*/0, /*nullable=*/0,
+            .default_expr = "now"},
+        {4, "amount",     "float64", /*primary_key=*/0, /*nullable=*/0,
+            .default_value_json = "0.0"},
+        {5, "status",     "varchar", /*primary_key=*/0, /*nullable=*/0,
+            .enum_variants = kStatusVariants, .enum_variants_len = 3,
+            .default_value_json = "\"active\""},
     };
     int64_t tid = 0;
-    if (mongreldb_create_table(db, "orders", cols, 4, &tid) != MDB_OK) {
+    if (mongreldb_create_table(db, "orders", cols, 5, &tid) != MDB_OK) {
         fprintf(stderr, "create table: %s\n", mongreldb_last_error(db));
         return 1;
     }
 
     /* 4. Insert rows. Cells pair column id + value. The status column is
      *    constrained to {"active","inactive","paused"}; "active" matches the
-     *    default_value. */
+     *    default_value_json literal. */
     mongreldb_input_cell r1[] = {
         {1, {MDB_VAL_INT64,  .v.i64 = 1}},
         {2, {MDB_VAL_STRING, .v.str = "Alice"}},
@@ -196,16 +196,42 @@ You should see the row count of 2.
 | `mongreldb_health(c)` | GET `/health`; returns `MDB_OK` when the daemon answers. Always check before real work. |
 | `mongreldb_create_table(c, name, cols, n, &tid)` | POST `/kit/create_table`. Column `id`s are the on-wire identifiers; use them everywhere else. |
 | `col.enum_variants / enum_variants_len` | Optional. Constrains a text column to a fixed value set; server-enforced on commit, surfaces as `MDB_ERR_CONFLICT` on a row outside the set. NULL/0 = absent. |
-| `col.default_value_json` | Optional caller-validated raw static JSON scalar. NULL = absent. |
+| `col.default_value_json` | Optional caller-validated raw static JSON scalar, e.g. `"\"draft\""`, `"7"`, `"true"`, `"null"`. The literal JSON type is preserved on the wire. NULL = absent. |
 | `col.default_expr` | Optional dynamic default: `"now"` or `"uuid"`. Takes precedence. NULL = absent. |
 | `col.default_value` | Legacy string-only default. NULL = absent. |
 | `mongreldb_put(c, table, cells, n, key)` | Single-op transaction: POST `/kit/txn` with one `put` op. `cells` is flattened to `[col_id, val, ...]`. |
+| `mongreldb_history_retention_get/set` | Inspect or resize the rolling MVCC history window in commit epochs. Requires `ADMIN` permission when catalog auth is enabled; widening the window cannot restore already-pruned history. |
 | `mongreldb_query(...)` | Builds a `/kit/query` body. Conditions push down to native indexes. |
 | `.projection = {1,2}` | Server returns only those column ids, saving bandwidth. |
 | `.limit = 100` | Caps the result; check `res.truncated` afterward to detect overflow. |
 | `mongreldb_count(c, table, &n)` | GET `/tables/{name}/count`. |
 
-## 6. Common pitfalls
+## 6. History retention
+
+The daemon keeps a rolling window of prior MVCC commit epochs. Use
+`mongreldb_history_retention_get` and `mongreldb_history_retention_set` to
+inspect or resize it at runtime:
+
+```c
+mongreldb_history_retention ret;
+if (mongreldb_history_retention_get(db, &ret) == MDB_OK) {
+    printf("retain %llu epochs; earliest retained epoch %llu\n",
+           (unsigned long long)ret.history_retention_epochs,
+           (unsigned long long)ret.earliest_retained_epoch);
+}
+
+if (mongreldb_history_retention_set(db, 4096, &ret) != MDB_OK) {
+    fprintf(stderr, "set retention: %s\n", mongreldb_last_error(db));
+}
+```
+
+When catalog authentication is enabled, both routes require the `ADMIN`
+permission. Increasing the window cannot restore history that was already
+pruned; the wider guarantee only applies from the current epoch forward.
+Historical rows are readable through SQL `AS OF EPOCH` as long as their epoch
+remains inside the window.
+
+## 7. Common pitfalls
 
 **Using the column name instead of the column id.** Every on-wire API uses the
 numeric `id` from `create_table`, never the `name`. Conditions take the int64

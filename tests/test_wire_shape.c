@@ -139,6 +139,56 @@ int main(void) {
         printf("PASS: CHECK constraints wire shape\n");
     }
 
+    // Test 5: history retention request shape and response decoding.
+    {
+        char body[128];
+        assert(history_retention_set_body(100, body, sizeof(body)) == 0);
+        assert(strcmp(body, "{\"history_retention_epochs\":100}") == 0);
+        assert(strcmp(history_retention_method(), "PUT") == 0);
+        assert(strcmp(history_retention_path(), "/history/retention") == 0);
+
+        const char *resp =
+            "{\"history_retention_epochs\":100,\"earliest_retained_epoch\":42}";
+        mongreldb_history_retention ret = {0};
+        assert(history_retention_decode_json(resp, strlen(resp), &ret) == MDB_OK);
+        assert(ret.history_retention_epochs == 100);
+        assert(ret.earliest_retained_epoch == 42);
+        printf("PASS: history retention wire shape\n");
+    }
+
+    // Test 6: typed static defaults and dynamic default_expr in one payload.
+    {
+        mongreldb_column cols[6] = {0};
+        cols[0].id = 1; cols[0].name = "c_draft"; cols[0].ty = "varchar";
+        cols[0].default_value_json = "\"draft\"";
+
+        cols[1].id = 2; cols[1].name = "c_num"; cols[1].ty = "int64";
+        cols[1].default_value_json = "7";
+
+        cols[2].id = 3; cols[2].name = "c_bool"; cols[2].ty = "bool";
+        cols[2].default_value_json = "true";
+
+        cols[3].id = 4; cols[3].name = "c_null"; cols[3].ty = "varchar";
+        cols[3].default_value_json = "null";
+
+        cols[4].id = 5; cols[4].name = "c_now_lit"; cols[4].ty = "varchar";
+        cols[4].default_value_json = "\"now\"";
+
+        cols[5].id = 6; cols[5].name = "c_now_expr"; cols[5].ty = "timestamp_nanos";
+        cols[5].default_expr = "now";
+
+        sbuf out = {0};
+        json_serialize_create_table(&out, "defaults_matrix", cols, 6, NULL);
+        assert(strstr(out.data, "\"default_value\":\"draft\"") != NULL);
+        assert(strstr(out.data, "\"default_value\":7") != NULL);
+        assert(strstr(out.data, "\"default_value\":true") != NULL);
+        assert(strstr(out.data, "\"default_value\":null") != NULL);
+        assert(strstr(out.data, "\"default_value\":\"now\"") != NULL);
+        assert(strstr(out.data, "\"default_expr\":\"now\"") != NULL);
+        free(out.data);
+        printf("PASS: typed default matrix wire shape\n");
+    }
+
     printf("All wire-shape tests passed.\n");
     return 0;
 }
