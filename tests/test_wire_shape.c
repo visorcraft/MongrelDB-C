@@ -39,6 +39,21 @@ int main(void) {
         printf("PASS: basic column wire shape\n");
     }
 
+    {
+        const char *values[] = {"\"text\"", "true", "null", "\"now\""};
+        const char *wants[] = {"\"default_value\":\"text\"", "\"default_value\":true",
+                               "\"default_value\":null", "\"default_value\":\"now\""};
+        for (size_t i = 0; i < 4; i++) {
+            mongreldb_column col = {0};
+            col.default_value_json = values[i];
+            sbuf out = {0};
+            json_serialize_column(&out, &col);
+            assert(strstr(out.data, wants[i]) != NULL);
+            assert(strstr(out.data, "default_expr") == NULL);
+            free(out.data);
+        }
+    }
+
     // Test 4: static JSON scalar default
     {
         mongreldb_column col = {0};

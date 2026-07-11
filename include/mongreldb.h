@@ -154,6 +154,11 @@ typedef struct {
     int truncated;        /* non-zero if the result hit the query limit */
 } mongreldb_result;
 
+typedef struct {
+    uint64_t history_retention_epochs;
+    uint64_t earliest_retained_epoch;
+} mongreldb_history_retention;
+
 /* Column definition passed to mongreldb_create_table(). Column ids are stable
  * on-wire identifiers used everywhere else (cells, conditions, projection). */
 typedef struct {
@@ -291,7 +296,11 @@ MONGRELDB_C_API int mongreldb_table_names(mongreldb_client *c,
 MONGRELDB_C_API int mongreldb_create_table(mongreldb_client *c,
                            const char *name,
                            const mongreldb_column *columns, size_t column_count,
-                           int64_t *out_table_id);
+                                           int64_t *out_table_id);
+MONGRELDB_C_API int mongreldb_history_retention_get(mongreldb_client *c,
+    mongreldb_history_retention *out);
+MONGRELDB_C_API int mongreldb_history_retention_set(mongreldb_client *c,
+    uint64_t epochs, mongreldb_history_retention *out);
 
 /* As above, with the complete JSON object for the optional Kit
  * `constraints` block. This permits unique, foreign-key, and CHECK

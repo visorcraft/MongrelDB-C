@@ -22,6 +22,9 @@
 |---|---|---|
 | C client | `MongrelDB-C` | build from source with CMake + libcurl |
 
+History retention: `mongreldb_history_retention_get` and
+`mongreldb_history_retention_set` expose `GET`/`PUT /history/retention`.
+
 ## Requirements
 
 - **A C99 compiler** (gcc, clang, MSVC)
