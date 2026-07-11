@@ -39,7 +39,7 @@ History retention: `mongreldb_history_retention_get` and
 - **Idempotent batch transactions** - all operations staged locally and committed atomically, with the engine enforcing unique, foreign key, and check constraints at commit time. Idempotency keys return the original response on duplicate commits, even after a crash.
 - **Full SQL access** through the DataFusion-backed `/sql` endpoint: recursive CTEs, window functions, `CREATE TABLE AS SELECT`, materialized views, and multi-statement execution.
 - **Schema management**: typed table creation, full schema catalog, and per-table descriptors.
-- **Bundled C ABI header** (`mongreldb_engine.h`) - a copy of the engine's native interface, for users who want to embed the engine directly rather than talk HTTP.
+- **Native Tier-1 embedding**: bundle the C ABI headers (`mongreldb_engine.h` + `mongreldb_kit.h`) and link `libmongreldb` + `libmongreldb_kit` for in-process access with zero serialization overhead. SQL, migrations, and the query builder are all available through the FFI. Download prebuilt libraries from the [MongrelDB releases](https://github.com/visorcraft/MongrelDB/releases) page (`mongreldb-native-*` and `mongreldb-kit-native-*` archives).
 - **Typed error codes**: `MDB_ERR_AUTH` (401/403), `MDB_ERR_NOT_FOUND` (404), `MDB_ERR_CONFLICT` (409), `MDB_ERR_QUERY` (400/5xx), plus `MDB_ERR_NETWORK`, `MDB_ERR_JSON`, and `MDB_ERR_NOMEM`. Retrieve the detail with `mongreldb_last_error()`.
 - **Zero external JSON dependency**: a minimal parser is included, so the only runtime dependency beyond libc is libcurl.
 
@@ -364,6 +364,53 @@ Or compile the sources directly:
 cc -std=c99 -I/path/to/MongrelDB-C/include your_app.c \
    /path/to/MongrelDB-C/src/mongreldb.c -lcurl -o your_app
 ```
+
+## Native embedding (Tier 1)
+
+For in-process access with zero serialization overhead, link the prebuilt
+`libmongreldb` (core engine) and optionally `libmongreldb_kit` (schema model,
+migrations, query builder) instead of connecting to a daemon. Download the
+prebuilt libraries from the
+[MongrelDB releases](https://github.com/visorcraft/MongrelDB/releases) page:
+
+```sh
+# Download for your platform, e.g. linux-x64-gnu
+curl -fsSL -o native.tar.gz \
+  https://github.com/visorcraft/MongrelDB/releases/download/v0.48.0/mongreldb-native-linux-x64-gnu.tar.gz
+tar xzf native.tar.gz  # produces mongreldb-native/{lib,include}/
+
+curl -fsSL -o kit-native.tar.gz \
+  https://github.com/visorcraft/MongrelDB/releases/download/v0.48.0/mongreldb-kit-native-linux-x64-gnu.tar.gz
+tar xzf kit-native.tar.gz  # produces mongreldb-kit-native/{lib,include}/
+```
+
+Then compile against the bundled headers (`mongreldb_engine.h` for the core
+ABI, `mongreldb_kit.h` for the Kit layer):
+
+```sh
+# Core engine: create database, put rows, run SQL
+cc -std=c99 -Iinclude -Imongreldb-native/include your_engine_app.c \
+   -Lmongreldb-native/lib -lmongreldb -lpthread -ldl -lm \
+   -Wl,-rpath,mongreldb-native/lib -o your_engine_app
+
+# Kit layer: schema model, migrations, query builder
+cc -std=c99 -Iinclude -Imongreldb-native/include -Imongreldb-kit-native/include \
+   your_kit_app.c \
+   -Lmongreldb-kit-native/lib -lmongreldb_kit \
+   -Lmongreldb-native/lib -lmongreldb \
+   -lpthread -ldl -lm \
+   -Wl,-rpath,mongreldb-native/lib -Wl,-rpath,mongreldb-kit-native/lib \
+   -o your_kit_app
+```
+
+The core ABI header `mongreldb_engine.h` and Kit header `mongreldb_kit.h` are
+bundled in the `include/` directory. **Do not include `mongreldb.h` (the HTTP
+client header) and `mongreldb_engine.h` in the same translation unit** - they
+declare conflicting `mongreldb_*` symbols. Use exactly one per `.c` file.
+
+See the FFI crate's [`docs/migrations.md`](https://github.com/visorcraft/MongrelDB/blob/master/crates/mongreldb-ffi/docs/migrations.md)
+for the full `MigrationOp` to FFI call mapping when running migrations via the
+native ABI.
 
 ## Contributing
 

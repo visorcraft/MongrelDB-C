@@ -1,17 +1,17 @@
 /*
  * mongreldb_engine.h - C ABI for MongrelDB core (bundled copy for native embedding).
  *
- * This is a verbatim copy of the engine's public ABI header from the
- * mongreldb-ffi crate, bundled here so C users who want to embed the engine
- * natively (linking against libmongreldb) have a single header to include. It
- * is distinct from mongreldb.h (the HTTP client header): use this one when you
+ * This is a copy of the engine's public ABI header from the mongreldb-ffi
+ * crate, bundled here so C users who want to embed the engine natively
+ * (linking against libmongreldb) have a single header to include. It is
+ * distinct from mongreldb.h (the HTTP client header): use this one when you
  * link the engine as a library, and mongreldb.h when you talk to a daemon over
  * HTTP.
  *
- * This is the single interface for all native (Tier-1) language bindings (Go,
- * Java, C#, Ruby, Swift, etc.). Every function returns int32_t (0 = MDB_OK,
- * negative = error code) unless it returns an opaque handle pointer (NULL on
- * error). Detailed error messages are available via mongreldb_last_error() /
+ * This header is the single interface for all native (Tier-1) language
+ * bindings. Every function returns int32_t (0 = MDB_OK, negative = error
+ * code) unless it returns an opaque handle pointer (NULL on error). Detailed
+ * error messages are available via mongreldb_last_error() /
  * mongreldb_last_error_code().
  *
  * Memory model:
@@ -233,6 +233,7 @@ typedef struct {
     const char *ref_table;
     mongreldb_u16_slice ref_columns;
     mongreldb_fk_action on_delete;
+    mongreldb_fk_action on_update;
 } mongreldb_foreign_key;
 
 /* ── Condition struct ───────────────────────────────────────────────────── */
@@ -314,6 +315,71 @@ int32_t mongreldb_create_table(
 int32_t mongreldb_drop_table(mongreldb_database_t *db, const char *name);
 int32_t mongreldb_rename_table(
     mongreldb_database_t *db, const char *name, const char *new_name);
+
+/* ── SQL execution ──────────────────────────────────────────────────────── */
+/*
+ * Run a SQL statement via the DataFusion engine (same engine the daemon and
+ * Kit use). Results are returned as Arrow IPC *file* bytes (the format Arrow
+ * calls "IPC file" or "Feather v2" - starts with the 6-byte "ARROW1" magic).
+ * DDL/DML statements that produce no rows return a zero-length buffer
+ * (*out_len = 0). Decode with any Arrow IPC file reader (e.g. the C++
+ * arrow::ipc::RecordBatchFileReader, nanoarrow, or pyarrow.ipc.open_file).
+ *
+ * The session is cached on the database handle so repeated calls reuse
+ * catalog/view state. After a table create/drop via the FFI (not via SQL),
+ * call mongreldb_database_sql_refresh() so the session sees the new tables.
+ *
+ * The caller owns *out_buf and must free it with mongreldb_free_sql_result().
+ * On error, *out_buf is unchanged and a negative code is returned (call
+ * mongreldb_last_error() for details).
+ */
+int32_t mongreldb_database_sql(
+    mongreldb_database_t *db, const char *sql,
+    uint8_t **out_buf, size_t *out_len);
+
+/* Rebuild the cached SQL session so it sees the current table set after a
+ * schema change made outside SQL (e.g. via mongreldb_create_table). Returns
+ * MDB_OK on success. */
+int32_t mongreldb_database_sql_refresh(mongreldb_database_t *db);
+
+/* Free a byte buffer returned by mongreldb_database_sql(). Safe to call with
+ * NULL or a zero-length buffer. */
+void mongreldb_free_sql_result(uint8_t *ptr, size_t len);
+
+/* ── Migration planning ─────────────────────────────────────────────────── */
+/*
+ * Migration *planning* and *checksum* logic is centralized in the FFI so every
+ * language binding produces identical results. The *execution* (applying each
+ * MigrationOp to a live database) is done by the host language using the
+ * existing FFI functions (mongreldb_create_table, mongreldb_database_sql, etc.).
+ *
+ * All functions use JSON for the complex Migration/MigrationOp types:
+ *   Migration: {"version":1,"name":"initial","ops":[...]}
+ *   MigrationOp variants: see docs/migrations.md for the full list.
+ */
+
+/* Plan pending migrations. Takes applied_json (migrations already in the db)
+ * and desired_json (the full app-defined ordered set), returns a JSON array
+ * of pending migrations (version > max applied), sorted by version. The
+ * result is written to *out_json (NUL-terminated UTF-8, caller frees with
+ * mongreldb_free_migrate_string). Returns MDB_OK on success. */
+int32_t mongreldb_plan_migrations_json(
+    const char *applied_json,
+    const char *desired_json,
+    const char **out_json);
+
+/* Compute the canonical SHA-256 checksum for a single migration (identical
+ * across all language bindings). Takes version, name, and ops_json (a JSON
+ * array of MigrationOp). Result is a 64-char hex string written to
+ * *out_checksum (caller frees with mongreldb_free_migrate_string). */
+int32_t mongreldb_migration_checksum_json(
+    int64_t version,
+    const char *name,
+    const char *ops_json,
+    const char **out_checksum);
+
+/* Free a string returned by the migration functions above. */
+void mongreldb_free_migrate_string(char *ptr);
 
 /* ── Schema builder ─────────────────────────────────────────────────────── */
 
