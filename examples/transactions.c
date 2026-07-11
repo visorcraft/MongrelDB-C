@@ -50,7 +50,7 @@ static const mongreldb_column kCols[] = {
         /*default_value=*/NULL},
     {3, "score",  "float64", /*primary_key=*/0, /*nullable=*/0,
         /*enum_variants=*/NULL,        /*enum_variants_len=*/0,
-        /*default_value=*/"0.0"},
+        /*default_value=*/NULL, /*default_value_json=*/"0.0", /*default_expr=*/NULL},
     {4, "status", "varchar", /*primary_key=*/0, /*nullable=*/0,
         /*enum_variants=*/kStatusVariants, /*enum_variants_len=*/3,
         /*default_value=*/"active"},
