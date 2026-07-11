@@ -949,8 +949,10 @@ static int do_request(mongreldb_client *c, const char *method,
                 sentinel = "constraint violation";
                 break;
             default:
-                mapped = MDB_ERR_QUERY;
-                sentinel = "server error";
+                mapped = msg && strncmp(msg, "not found:", 10) == 0
+                    ? MDB_ERR_NOT_FOUND : MDB_ERR_QUERY;
+                sentinel = mapped == MDB_ERR_NOT_FOUND
+                    ? "resource not found" : "server error";
                 break;
         }
         if (!msg) {

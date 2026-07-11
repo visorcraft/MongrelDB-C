@@ -600,7 +600,7 @@ TEST(test_sql) {
 
 TEST(test_string_values) {
     SKIP_IF_NO_DAEMON();
-    mongreldb_column cols[3];
+    mongreldb_column cols[3] = {0};
     cols[0] = int_col(1, "id", 1);
     cols[1].id = 2; cols[1].name = "label"; cols[1].ty = "varchar";
     cols[1].primary_key = 0; cols[1].nullable = 0;
