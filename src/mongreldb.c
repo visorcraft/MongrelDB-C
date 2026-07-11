@@ -244,9 +244,9 @@ static void json_serialize_cells(sbuf *out,
 
 /* Build the JSON object for a single column as sent in /kit/create_table.
  * Extracted from mongreldb_create_table so the wire shape can be unit-tested
- * without a live daemon. Optional fields (enum_variants, default_value) are
- * omitted when their pointer is NULL or, for enum_variants, when the length
- * is zero. */
+ * without a live daemon. Optional fields (enum_variants, default_value_json,
+ * default_expr, and legacy default_value) are omitted when their pointer is
+ * NULL or, for enum_variants, when the length is zero. */
 static void json_serialize_column(sbuf *out, const mongreldb_column *col) {
     sbuf_append_char(out, '{');
     sbuf_append_str(out, "\"id\":");
@@ -1264,7 +1264,7 @@ static int decode_history_retention(mongreldb_client *c,
 int mongreldb_history_retention_get(mongreldb_client *c,
                                     mongreldb_history_retention *out) {
     int rc = c_get(c, history_retention_path());
-    return rc == MDB_OK ? history_retention_decode_json(c->recv.data, c->recv.len, out) : rc;
+    return rc == MDB_OK ? decode_history_retention(c, out) : rc;
 }
 
 int mongreldb_history_retention_set(mongreldb_client *c, uint64_t epochs,
@@ -1274,7 +1274,7 @@ int mongreldb_history_retention_set(mongreldb_client *c, uint64_t epochs,
         return MDB_ERR_NOMEM;
     }
     int rc = c_put(c, history_retention_path(), body);
-    return rc == MDB_OK ? history_retention_decode_json(c->recv.data, c->recv.len, out) : rc;
+    return rc == MDB_OK ? decode_history_retention(c, out) : rc;
 }
 
 int mongreldb_create_table_with_constraints_json(

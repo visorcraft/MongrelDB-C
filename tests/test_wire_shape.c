@@ -39,6 +39,7 @@ int main(void) {
         printf("PASS: basic column wire shape\n");
     }
 
+    // Test 2: static JSON scalar defaults preserve literal types.
     {
         const char *values[] = {"\"text\"", "true", "null", "\"now\""};
         const char *wants[] = {"\"default_value\":\"text\"", "\"default_value\":true",
@@ -54,7 +55,7 @@ int main(void) {
         }
     }
 
-    // Test 4: static JSON scalar default
+    // Test 3: integer static JSON scalar default
     {
         mongreldb_column col = {0};
         col.id = 4;
@@ -68,7 +69,7 @@ int main(void) {
         free(out.data);
     }
 
-    // Test 5: dynamic expression takes precedence over static defaults
+    // Test 4: dynamic expression takes precedence over static defaults
     {
         mongreldb_column col = {0};
         col.id = 5;
@@ -84,7 +85,7 @@ int main(void) {
         free(out.data);
     }
 
-    // Test 2: Column with enum_variants
+    // Test 5: Column with enum_variants
     {
         const char *variants[] = {"active", "inactive", "pending"};
         mongreldb_column col = {0};
@@ -104,7 +105,7 @@ int main(void) {
         printf("PASS: enum_variants wire shape\n");
     }
 
-    // Test 3: Column with default_value
+    // Test 6: legacy string default_value
     {
         mongreldb_column col = {0};
         col.id = 3;
@@ -122,7 +123,7 @@ int main(void) {
         printf("PASS: default_value wire shape\n");
     }
 
-    // Test 4: complete create-table payload with a table CHECK.
+    // Test 7: complete create-table payload with a table CHECK.
     {
         mongreldb_column col = {0};
         col.id = 1;
@@ -139,7 +140,7 @@ int main(void) {
         printf("PASS: CHECK constraints wire shape\n");
     }
 
-    // Test 5: history retention request shape and response decoding.
+    // Test 8: history retention request shape and response decoding.
     {
         char body[128];
         assert(history_retention_set_body(100, body, sizeof(body)) == 0);
@@ -156,7 +157,7 @@ int main(void) {
         printf("PASS: history retention wire shape\n");
     }
 
-    // Test 6: typed static defaults and dynamic default_expr in one payload.
+    // Test 9: typed static defaults and dynamic default_expr in one payload.
     {
         mongreldb_column cols[6] = {0};
         cols[0].id = 1; cols[0].name = "c_draft"; cols[0].ty = "varchar";

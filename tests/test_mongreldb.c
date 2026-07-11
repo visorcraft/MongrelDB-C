@@ -786,7 +786,7 @@ TEST(test_history_retention) {
     char sql[256];
     snprintf(sql, sizeof(sql),
              "SELECT id, val FROM c_retention AS OF EPOCH %llu WHERE id = 1",
-             (unsigned long long)(after_update - 1));
+             (unsigned long long)after_insert);
     const char *body = NULL;
     CHECK_RC(mongreldb_sql(g_client, sql, &body));
     CHECK(body != NULL && strstr(body, "\"val\":7") != NULL,
