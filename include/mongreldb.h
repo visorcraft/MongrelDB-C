@@ -284,6 +284,16 @@ MONGRELDB_C_API int mongreldb_create_table(mongreldb_client *c,
                            const mongreldb_column *columns, size_t column_count,
                            int64_t *out_table_id);
 
+/* As above, with the complete JSON object for the optional Kit
+ * `constraints` block. This permits unique, foreign-key, and CHECK
+ * constraints without baking the engine's expression IR into the C ABI. */
+MONGRELDB_C_API int mongreldb_create_table_with_constraints_json(
+                           mongreldb_client *c,
+                           const char *name,
+                           const mongreldb_column *columns, size_t column_count,
+                           const char *constraints_json,
+                           int64_t *out_table_id);
+
 /* mongreldb_drop_table drops a table by name. */
 MONGRELDB_C_API int mongreldb_drop_table(mongreldb_client *c, const char *name);
 

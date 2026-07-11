@@ -210,6 +210,17 @@ listed variants surfaces as `MDB_ERR_CONFLICT` on `put`/`commit`.
 The matching `default_expr` server-side alias is also accepted when the JSON is
 authored by hand.
 
+Table CHECKs use the additive constraints overload. The JSON is the daemon's
+native `constraints` object:
+
+```c
+const char *constraints =
+    "{\"checks\":[{\"id\":1,\"name\":\"amount_nonneg\",\"expr\":"
+    "{\"Ge\":[{\"Col\":3},{\"Lit\":{\"Float64\":0.0}}]}}]}";
+mongreldb_create_table_with_constraints_json(db, "orders", cols, 3,
+                                              constraints, &tid);
+```
+
 ## SQL
 
 ```c
@@ -290,7 +301,8 @@ default:
 |----------|-------------|
 | `mongreldb_health(c)` | Check daemon health |
 | `mongreldb_table_names(c, &names, &count)` | List table names |
-| `mongreldb_create_table(c, name, cols, n, &tid)` | Create a table |
+| `mongreldb_create_table(c, name, cols, n, &tid)` | Create a table; column descriptors may carry enum/default fields |
+| `mongreldb_create_table_with_constraints_json(c, name, cols, n, json, &tid)` | Create a table with native `constraints` JSON (including CHECKs) |
 | `mongreldb_drop_table(c, name)` | Drop a table |
 | `mongreldb_count(c, table, &n)` | Row count |
 | `mongreldb_put(c, table, cells, n, key)` | Insert a row |

@@ -11,16 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Declared static in mongreldb.c; redeclared here so we can test it directly.
-// The test binary compiles mongreldb.c directly (see CMakeLists.txt).
-static void json_serialize_column(sbuf *out, const mongreldb_column *col);
-
-// Reuse the sbuf type from mongreldb.c
-typedef struct {
-    char *data;
-    size_t len;
-    size_t cap;
-} sbuf;
+// Compile the file-local serializer into this offline test binary.
+#include "../src/mongreldb.c"
 
 int main(void) {
     // Test 1: Basic column (no optional fields)
@@ -83,6 +75,23 @@ int main(void) {
         assert(strstr(out.data, "enum_variants") == NULL);
         free(out.data);
         printf("PASS: default_value wire shape\n");
+    }
+
+    // Test 4: complete create-table payload with a table CHECK.
+    {
+        mongreldb_column col = {0};
+        col.id = 1;
+        col.name = "score";
+        col.ty = "int64";
+        const char *checks =
+            "{\"checks\":[{\"id\":1,\"name\":\"score_nonneg\",\"expr\":"
+            "{\"Ge\":[{\"Col\":1},{\"Lit\":{\"Int64\":0}}]}}]}";
+        sbuf out = {0};
+        json_serialize_create_table(&out, "scores", &col, 1, checks);
+        assert(strstr(out.data, "\"constraints\":{\"checks\":[") != NULL);
+        assert(strstr(out.data, "\"name\":\"score_nonneg\"") != NULL);
+        free(out.data);
+        printf("PASS: CHECK constraints wire shape\n");
     }
 
     printf("All wire-shape tests passed.\n");

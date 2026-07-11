@@ -1187,9 +1187,41 @@ int mongreldb_table_names(mongreldb_client *c,
     return MDB_OK;
 }
 
+static void json_serialize_create_table(sbuf *body,
+                                        const char *name,
+                                        const mongreldb_column *columns,
+                                        size_t column_count,
+                                        const char *constraints_json) {
+    sbuf_append_str(body, "{\"name\":");
+    json_escape(body, name);
+    sbuf_append_str(body, ",\"columns\":[");
+    for (size_t i = 0; i < column_count; i++) {
+        if (i > 0) {
+            sbuf_append_char(body, ',');
+        }
+        json_serialize_column(body, &columns[i]);
+    }
+    sbuf_append_char(body, ']');
+    if (constraints_json && constraints_json[0]) {
+        sbuf_append_str(body, ",\"constraints\":");
+        sbuf_append_str(body, constraints_json);
+    }
+    sbuf_append_char(body, '}');
+}
+
 int mongreldb_create_table(mongreldb_client *c,
                            const char *name,
                            const mongreldb_column *columns, size_t column_count,
+                           int64_t *out_table_id) {
+    return mongreldb_create_table_with_constraints_json(
+        c, name, columns, column_count, NULL, out_table_id);
+}
+
+int mongreldb_create_table_with_constraints_json(
+                           mongreldb_client *c,
+                           const char *name,
+                           const mongreldb_column *columns, size_t column_count,
+                           const char *constraints_json,
                            int64_t *out_table_id) {
     if (!c || !name || !columns) {
         return MDB_ERR_INVALID_ARG;
@@ -1199,16 +1231,8 @@ int mongreldb_create_table(mongreldb_client *c,
     }
     sbuf body;
     sbuf_init(&body);
-    sbuf_append_str(&body, "{\"name\":");
-    json_escape(&body, name);
-    sbuf_append_str(&body, ",\"columns\":[");
-    for (size_t i = 0; i < column_count; i++) {
-        if (i > 0) {
-            sbuf_append_char(&body, ',');
-        }
-        json_serialize_column(&body, &columns[i]);
-    }
-    sbuf_append_str(&body, "]}");
+    json_serialize_create_table(&body, name, columns, column_count,
+                                constraints_json);
 
     int rc = c_post(c, "/kit/create_table", body.data);
     free(body.data);
