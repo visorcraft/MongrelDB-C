@@ -271,7 +271,13 @@ static void json_serialize_column(sbuf *out, const mongreldb_column *col) {
         }
         sbuf_append_char(out, ']');
     }
-    if (col->default_value) {
+    if (col->default_expr) {
+        sbuf_append_str(out, ",\"default_expr\":");
+        json_escape(out, col->default_expr);
+    } else if (col->default_value_json) {
+        sbuf_append_str(out, ",\"default_value\":");
+        sbuf_append_str(out, col->default_value_json);
+    } else if (col->default_value) {
         sbuf_append_str(out, ",\"default_value\":");
         json_escape(out, col->default_value);
     }

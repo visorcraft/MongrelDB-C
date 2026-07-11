@@ -39,6 +39,36 @@ int main(void) {
         printf("PASS: basic column wire shape\n");
     }
 
+    // Test 4: static JSON scalar default
+    {
+        mongreldb_column col = {0};
+        col.id = 4;
+        col.name = "attempts";
+        col.ty = "int64";
+        col.default_value_json = "3";
+        sbuf out = {0};
+        json_serialize_column(&out, &col);
+        assert(strstr(out.data, "\"default_value\":3") != NULL);
+        assert(strstr(out.data, "default_expr") == NULL);
+        free(out.data);
+    }
+
+    // Test 5: dynamic expression takes precedence over static defaults
+    {
+        mongreldb_column col = {0};
+        col.id = 5;
+        col.name = "created_at";
+        col.ty = "timestamp_nanos";
+        col.default_value = "legacy";
+        col.default_value_json = "3";
+        col.default_expr = "now";
+        sbuf out = {0};
+        json_serialize_column(&out, &col);
+        assert(strstr(out.data, "\"default_expr\":\"now\"") != NULL);
+        assert(strstr(out.data, "default_value") == NULL);
+        free(out.data);
+    }
+
     // Test 2: Column with enum_variants
     {
         const char *variants[] = {"active", "inactive", "pending"};

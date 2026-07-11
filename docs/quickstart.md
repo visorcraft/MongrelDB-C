@@ -196,7 +196,9 @@ You should see the row count of 2.
 | `mongreldb_health(c)` | GET `/health`; returns `MDB_OK` when the daemon answers. Always check before real work. |
 | `mongreldb_create_table(c, name, cols, n, &tid)` | POST `/kit/create_table`. Column `id`s are the on-wire identifiers; use them everywhere else. |
 | `col.enum_variants / enum_variants_len` | Optional. Constrains a text column to a fixed value set; server-enforced on commit, surfaces as `MDB_ERR_CONFLICT` on a row outside the set. NULL/0 = absent. |
-| `col.default_value` | Optional. Default value string for the column. NULL = absent. The server's `default_expr` field name is also accepted. |
+| `col.default_value_json` | Optional caller-validated raw static JSON scalar. NULL = absent. |
+| `col.default_expr` | Optional dynamic default: `"now"` or `"uuid"`. Takes precedence. NULL = absent. |
+| `col.default_value` | Legacy string-only default. NULL = absent. |
 | `mongreldb_put(c, table, cells, n, key)` | Single-op transaction: POST `/kit/txn` with one `put` op. `cells` is flattened to `[col_id, val, ...]`. |
 | `mongreldb_query(...)` | Builds a `/kit/query` body. Conditions push down to native indexes. |
 | `.projection = {1,2}` | Server returns only those column ids, saving bandwidth. |

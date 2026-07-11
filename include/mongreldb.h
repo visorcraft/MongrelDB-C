@@ -166,9 +166,18 @@ typedef struct {
      * When present, the wire emit is "enum_variants": ["v1","v2",...]. */
     const char *const *enum_variants;
     size_t enum_variants_len;
-    /* Optional: default value for the column. NULL = absent. The wire emit
-     * is "default_value": "<value>". */
+    /* Optional legacy string default. NULL = absent. */
     const char *default_value;
+    /* Optional raw JSON scalar default, e.g. "42", "true", or "\"draft\"".
+     * Caller must provide valid scalar JSON. Takes precedence over
+     * default_value. NULL = absent. */
+    const char *default_value_json;
+    /* Optional dynamic default: "now" or "uuid". Takes precedence over both
+     * default-value fields. NULL = absent.
+     *
+     * ABI note: these fields extend mongreldb_column. Consumers built against
+     * an older header must be rebuilt before linking this client version. */
+    const char *default_expr;
 } mongreldb_column;
 
 /* A staged operation in a transaction. type selects the arm; the fields used

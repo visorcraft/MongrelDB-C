@@ -202,8 +202,11 @@ mongreldb_column cols[] = {
 };
 ```
 
-`enum_variants` is a `const char *const *` plus a length — both NULL/0 means
-"absent". `default_value` is a single string constant; NULL means "absent". The
+`enum_variants` is a `const char *const *` plus a length; both NULL/0 means
+"absent". `default_value_json` sends a caller-validated raw JSON scalar and
+`default_expr` sends `"now"` or `"uuid"`; the legacy `default_value` sends a
+string. Dynamic expressions take precedence. Because these fields extend the
+public `mongreldb_column` struct, rebuild consumers when upgrading. The
 constraint is enforced server-side, so a row whose value falls outside the
 listed variants surfaces as `MDB_ERR_CONFLICT` on `put`/`commit`.
 
