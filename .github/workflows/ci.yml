@@ -76,6 +76,12 @@ jobs:
       - name: Run examples
         run: |
           for ex in examples/*.c; do
+            # Kit-FFI examples link libmongreldb_kit, which is not produced by
+            # this repo; skip them in CI.
+            if grep -q 'mongreldb_kit.h' "$ex"; then
+              echo "=== Skipping $ex (requires libmongreldb_kit) ==="
+              continue
+            fi
             echo "=== Running $ex ==="
             gcc -std=c99 -Iinclude -o /tmp/ex "$ex" src/mongreldb.c -lcurl -lm
             /tmp/ex || { echo "FAILED: $ex"; exit 1; }
