@@ -1229,6 +1229,7 @@ int mongreldb_create_table(mongreldb_client *c,
 }
 
 static const char *history_retention_path(void) { return "/history/retention"; }
+__attribute__((unused))
 static const char *history_retention_method(void) { return "PUT"; }
 
 /* Build the PUT /history/retention request body. Exposed for offline wire-shape
