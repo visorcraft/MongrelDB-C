@@ -788,6 +788,20 @@ static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     return n;
 }
 
+/* classify_http_error maps an HTTP status code and the decoded error message
+ * to the client's typed error code. Extracted from do_request so the offline
+ * wire-shape tests can verify error propagation without a live daemon. */
+static int classify_http_error(long http_code, const char *msg) {
+    switch (http_code) {
+        case 401: case 403: return MDB_ERR_AUTH;
+        case 404:           return MDB_ERR_NOT_FOUND;
+        case 409:           return MDB_ERR_CONFLICT;
+        default:
+            return (msg && strncmp(msg, "not found:", 10) == 0)
+                ? MDB_ERR_NOT_FOUND : MDB_ERR_QUERY;
+    }
+}
+
 /* do_request performs one HTTP request. method is "GET"/"POST"/"DELETE".
  * request_body is the JSON to send (NULL for no body). The response body lands
  * in c->recv and is NUL-terminated. Returns MDB_OK or a negative code; on HTTP
@@ -933,27 +947,13 @@ static int do_request(mongreldb_client *c, const char *method,
                 msg = dup_str(c->recv.data);
             }
         }
-        int mapped;
+        int mapped = classify_http_error(http_code, msg);
         const char *sentinel;
-        switch (http_code) {
-            case 401: case 403:
-                mapped = MDB_ERR_AUTH;
-                sentinel = "authentication failed";
-                break;
-            case 404:
-                mapped = MDB_ERR_NOT_FOUND;
-                sentinel = "resource not found";
-                break;
-            case 409:
-                mapped = MDB_ERR_CONFLICT;
-                sentinel = "constraint violation";
-                break;
-            default:
-                mapped = msg && strncmp(msg, "not found:", 10) == 0
-                    ? MDB_ERR_NOT_FOUND : MDB_ERR_QUERY;
-                sentinel = mapped == MDB_ERR_NOT_FOUND
-                    ? "resource not found" : "server error";
-                break;
+        switch (mapped) {
+            case MDB_ERR_AUTH:      sentinel = "authentication failed"; break;
+            case MDB_ERR_NOT_FOUND: sentinel = "resource not found"; break;
+            case MDB_ERR_CONFLICT:  sentinel = "constraint violation"; break;
+            default:                sentinel = "server error"; break;
         }
         if (!msg) {
             msg = dup_str(sentinel);

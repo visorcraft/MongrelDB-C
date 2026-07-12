@@ -186,8 +186,59 @@ int main(void) {
         assert(strstr(out.data, "\"default_value\":null") != NULL);
         assert(strstr(out.data, "\"default_value\":\"now\"") != NULL);
         assert(strstr(out.data, "\"default_expr\":\"now\"") != NULL);
+
+        // Type discrimination: numbers, bools, and nulls must NOT be
+        // string-quoted.  If the serializer accidentally wrapped a scalar in
+        // quotes, the positive assertion above could still match a substring
+        // of the wrong type.  These negative assertions close that gap.
+        assert(strstr(out.data, "\"default_value\":\"7\"") == NULL);
+        assert(strstr(out.data, "\"default_value\":\"true\"") == NULL);
+        assert(strstr(out.data, "\"default_value\":\"null\"") == NULL);
+        // Conversely, string defaults MUST carry quotes — an unquoted scalar
+        // would indicate the string was emitted as a bare identifier.
+        assert(strstr(out.data, "\"default_value\":draft") == NULL);
+        assert(strstr(out.data, "\"default_value\":now,") == NULL);
         free(out.data);
         printf("PASS: typed default matrix wire shape\n");
+    }
+
+    // Test 10: error propagation — non-2xx HTTP status maps to typed error codes.
+    //
+    // The /history/retention transport functions propagate whatever code
+    // do_request returns.  do_request classifies the HTTP status via
+    // classify_http_error, so verifying the classification IS verifying the
+    // propagation contract: a 503 body must surface as MDB_ERR_QUERY, a 401
+    // as MDB_ERR_AUTH, etc.
+    {
+        assert(classify_http_error(503, "server overloaded") == MDB_ERR_QUERY);
+        assert(classify_http_error(500, NULL) == MDB_ERR_QUERY);
+        assert(classify_http_error(400, "bad request") == MDB_ERR_QUERY);
+        assert(classify_http_error(401, NULL) == MDB_ERR_AUTH);
+        assert(classify_http_error(403, NULL) == MDB_ERR_AUTH);
+        assert(classify_http_error(404, NULL) == MDB_ERR_NOT_FOUND);
+        assert(classify_http_error(409, NULL) == MDB_ERR_CONFLICT);
+        // A "not found:" message prefix overrides the default bucket.
+        assert(classify_http_error(500, "not found: table gone") ==
+               MDB_ERR_NOT_FOUND);
+        printf("PASS: HTTP error status propagation\n");
+    }
+
+    // Test 11: error envelope decode — the JSON parser extracts message/code
+    // from a flat error body the same way do_request does.
+    {
+        const char *flat =
+            "{\"message\":\"server overloaded\",\"code\":\"UNAVAILABLE\"}";
+        char *msg = NULL;
+        char *code = NULL;
+        assert(json_get_string(flat, strlen(flat), "message", &msg));
+        assert(msg != NULL);
+        assert(strcmp(msg, "server overloaded") == 0);
+        assert(json_get_string(flat, strlen(flat), "code", &code));
+        assert(code != NULL);
+        assert(strcmp(code, "UNAVAILABLE") == 0);
+        free(msg);
+        free(code);
+        printf("PASS: error envelope decode\n");
     }
 
     printf("All wire-shape tests passed.\n");
