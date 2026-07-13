@@ -1582,6 +1582,17 @@ int mongreldb_query(mongreldb_client *c,
                     const int64_t *projection, size_t projection_count,
                     int64_t limit,
                     mongreldb_result *out_result) {
+    return mongreldb_query_page(c, table, conditions, condition_count,
+                                projection, projection_count, limit, 0,
+                                out_result);
+}
+
+int mongreldb_query_page(mongreldb_client *c,
+                    const char *table,
+                    const mongreldb_condition *conditions, size_t condition_count,
+                    const int64_t *projection, size_t projection_count,
+                    int64_t limit, int64_t offset,
+                    mongreldb_result *out_result) {
     if (!c || !table || !out_result) {
         return MDB_ERR_INVALID_ARG;
     }
@@ -1617,6 +1628,12 @@ int mongreldb_query(mongreldb_client *c,
         char ibuf[32];
         snprintf(ibuf, sizeof(ibuf), "%lld", (long long)limit);
         sbuf_append_str(&body, ",\"limit\":");
+        sbuf_append_str(&body, ibuf);
+    }
+    if (offset != 0) {
+        char ibuf[32];
+        snprintf(ibuf, sizeof(ibuf), "%lld", (long long)offset);
+        sbuf_append_str(&body, ",\"offset\":");
         sbuf_append_str(&body, ibuf);
     }
     sbuf_append_char(&body, '}');

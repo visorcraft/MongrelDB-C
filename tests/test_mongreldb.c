@@ -565,6 +565,11 @@ TEST(test_query_range) {
     CHECK(found && pk == 2, "expected returned pk 2, got %lld", (long long)pk);
     int64_t amt = cell_i64(res.rows[0], 2, &found);
     CHECK(found && amt == 120, "expected returned amount 120, got %lld", (long long)amt);
+
+    CHECK_RC(mongreldb_query_page(g_client, "c_range", NULL, 0, NULL, 0, 1, 2, &res));
+    CHECK(res.count == 1, "expected one row on offset page");
+    pk = cell_i64(res.rows[0], 1, &found);
+    CHECK(found && pk == 3, "expected offset page pk 3, got %lld", (long long)pk);
 }
 
 TEST(test_transaction_commit) {

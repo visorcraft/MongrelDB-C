@@ -341,6 +341,7 @@ default:
 | `mongreldb_delete_by_pk(c, table, &pk)` | Delete by primary key |
 | `mongreldb_commit(c, ops, n, key)` | Commit a batch atomically |
 | `mongreldb_query(c, table, conds, n, proj, pn, limit, &res)` | Run a native query |
+| `mongreldb_query_page(c, table, conds, n, proj, pn, limit, offset, &res)` | Run a paged native query |
 | `mongreldb_sql(c, sql, &body)` | Execute SQL |
 | `mongreldb_schema(c, &body)` | Full schema catalog (raw JSON) |
 | `mongreldb_schema_for(c, table, &body)` | Single-table descriptor (raw JSON) |
