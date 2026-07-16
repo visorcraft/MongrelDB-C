@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 project(mongreldb_c
-    VERSION 0.55.0
+    VERSION 0.57.0
     DESCRIPTION "Pure C99 HTTP client for MongrelDB"
     LANGUAGES C
 )
