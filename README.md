@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/visorcraft/MongrelDB-C/actions/workflows/ci.yml"><img src="https://github.com/visorcraft/MongrelDB-C/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/visorcraft/MongrelDB/releases"><img src="https://img.shields.io/badge/server-v0.60.2-blue.svg" alt="MongrelDB server" /></a>
+  <a href="https://github.com/visorcraft/MongrelDB/releases"><img src="https://img.shields.io/badge/server-v0.60.3-blue.svg" alt="MongrelDB server" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License" /></a>
 </p>
 
@@ -370,7 +370,7 @@ Fetch a prebuilt server binary from the [MongrelDB releases](https://github.com/
 ```sh
 mkdir -p bin
 curl -fsSL -o bin/mongreldb-server \
-  https://github.com/visorcraft/MongrelDB/releases/download/v0.60.2/mongreldb-server-linux-x64
+  https://github.com/visorcraft/MongrelDB/releases/download/v0.60.3/mongreldb-server-linux-x64
 chmod +x bin/mongreldb-server
 ```
 
@@ -401,11 +401,11 @@ prebuilt libraries from the
 ```sh
 # Download for your platform, e.g. linux-x64-gnu
 curl -fsSL -o native.tar.gz \
-  https://github.com/visorcraft/MongrelDB/releases/download/v0.60.2/mongreldb-native-linux-x64-gnu.tar.gz
+  https://github.com/visorcraft/MongrelDB/releases/download/v0.60.3/mongreldb-native-linux-x64-gnu.tar.gz
 tar xzf native.tar.gz  # produces mongreldb-native/{lib,include}/
 
 curl -fsSL -o kit-native.tar.gz \
-  https://github.com/visorcraft/MongrelDB/releases/download/v0.60.2/mongreldb-kit-native-linux-x64-gnu.tar.gz
+  https://github.com/visorcraft/MongrelDB/releases/download/v0.60.3/mongreldb-kit-native-linux-x64-gnu.tar.gz
 tar xzf kit-native.tar.gz  # produces mongreldb-kit-native/{lib,include}/
 ```
 
