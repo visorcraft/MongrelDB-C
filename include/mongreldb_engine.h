@@ -284,6 +284,73 @@ typedef struct {
     size_t len;
 } mongreldb_row_input_array;
 
+/* ── Hybrid search request structs ──────────────────────────────────────── */
+
+typedef enum {
+    MDB_RETRIEVER_ANN      = 0,
+    MDB_RETRIEVER_SPARSE   = 1,
+    MDB_RETRIEVER_MIN_HASH = 2,
+} mongreldb_retriever_kind;
+
+typedef enum {
+    MDB_SEARCH_METRIC_COSINE    = 0,
+    MDB_SEARCH_METRIC_DOT       = 1,
+    MDB_SEARCH_METRIC_EUCLIDEAN = 2,
+} mongreldb_search_metric;
+
+typedef enum {
+    MDB_FUSION_RECIPROCAL_RANK = 0,
+} mongreldb_fusion_kind;
+
+typedef struct {
+    int32_t kind;
+    uint16_t column_id;
+    const char *name;
+    double weight;
+    uint32_t k;
+    mongreldb_embedding_view embedding;
+    mongreldb_sparse_term_array sparse_terms;
+    mongreldb_minhash_members minhash_members;
+} mongreldb_retriever;
+
+typedef struct {
+    const mongreldb_retriever *data;
+    size_t len;
+} mongreldb_retriever_array;
+
+typedef struct {
+    int32_t kind;
+    uint32_t reciprocal_rank_constant;
+} mongreldb_fusion;
+
+typedef struct {
+    int32_t kind;
+    uint16_t embedding_column;
+    mongreldb_embedding_view query;
+    int32_t metric;
+    uint32_t candidate_limit;
+    double weight;
+} mongreldb_rerank;
+
+typedef struct {
+    const mongreldb_condition *data;
+    size_t len;
+} mongreldb_condition_array;
+
+typedef struct {
+    const uint16_t *data;
+    size_t len;
+} mongreldb_projection;
+
+typedef struct {
+    mongreldb_condition_array must;
+    mongreldb_retriever_array retrievers;
+    mongreldb_fusion fusion;
+    const mongreldb_rerank *rerank;
+    size_t limit;
+    mongreldb_projection projection;
+} mongreldb_search_request;
+
 /* ── Error accessors ────────────────────────────────────────────────────── */
 
 const char *mongreldb_last_error(void);
@@ -427,6 +494,17 @@ void mongreldb_query_free(mongreldb_query_t *q);
 
 mongreldb_result_t *mongreldb_table_query(
     mongreldb_table_t *t, mongreldb_query_t *q);
+
+/* ── Hybrid search ─────────────────────────────────────────────────────── */
+
+/* Optional opaque builder handle (empty request). Preferred path is to fill a
+ * stack mongreldb_search_request and pass it to mongreldb_table_search. */
+mongreldb_search_request_t *mongreldb_search_request_begin(void);
+void mongreldb_search_request_free(mongreldb_search_request_t *req);
+mongreldb_result_t *mongreldb_table_search(
+    mongreldb_table_t *t, const mongreldb_search_request *req);
+
+
 size_t mongreldb_result_count(mongreldb_result_t *r);
 int32_t mongreldb_result_row(mongreldb_result_t *r, size_t index, mongreldb_row *out_row);
 size_t mongreldb_row_cell_count(const mongreldb_row *row);
