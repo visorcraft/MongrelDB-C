@@ -307,6 +307,55 @@ int main(void) {
         printf("PASS: error envelope decode\n");
     }
 
+    // Test 13: swappable ANN algorithms (DiskANN / IVF) and product
+    // quantization serialize to the expected JSON wire shape.
+    {
+        mongreldb_index diskann = {
+            .name = "ann_diskann", .column_id = 2, .kind = MDB_INDEX_ANN,
+            .ann_quantization = MDB_ANN_QUANTIZATION_DENSE,
+            .ann_algorithm = MDB_ANN_ALGORITHM_DISKANN,
+            .diskann_r = 128, .diskann_l = 256, .diskann_beam_width = 4,
+            .diskann_alpha = 130};
+        sbuf out = {0};
+        json_serialize_index(&out, &diskann);
+        assert(strstr(out.data, "\"algorithm\":\"diskann\"") != NULL);
+        assert(strstr(out.data, "\"quantization\":\"dense\"") != NULL);
+        assert(strstr(out.data, "\"diskann\":{\"r\":128") != NULL);
+        assert(strstr(out.data, "\"l\":256") != NULL);
+        assert(strstr(out.data, "\"beam_width\":4") != NULL);
+        assert(strstr(out.data, "\"alpha\":130") != NULL);
+        free(out.data);
+
+        mongreldb_index ivf = {
+            .name = "ann_ivf", .column_id = 2, .kind = MDB_INDEX_ANN,
+            .ann_quantization = MDB_ANN_QUANTIZATION_DENSE,
+            .ann_algorithm = MDB_ANN_ALGORITHM_IVF,
+            .ivf_nlist = 512, .ivf_nprobe = 16};
+        out = (sbuf){0};
+        json_serialize_index(&out, &ivf);
+        assert(strstr(out.data, "\"algorithm\":\"ivf\"") != NULL);
+        assert(strstr(out.data, "\"ivf\":{\"nlist\":512,\"nprobe\":16}") != NULL);
+        free(out.data);
+
+        mongreldb_index pq = {
+            .name = "ann_pq", .column_id = 2, .kind = MDB_INDEX_ANN,
+            .ann_quantization = MDB_ANN_QUANTIZATION_PRODUCT,
+            .pq_num_subvectors = 32, .pq_bits = 8,
+            .pq_training_samples = 10000, .pq_seed = 42,
+            .pq_rerank_factor = 3};
+        out = (sbuf){0};
+        json_serialize_index(&out, &pq);
+        assert(strstr(out.data, "\"quantization\":\"product\"") != NULL);
+        assert(strstr(out.data, "\"product\":{\"training_samples\":10000") != NULL);
+        assert(strstr(out.data, "\"seed\":42") != NULL);
+        assert(strstr(out.data, "\"rerank_factor\":3") != NULL);
+        /* Default algorithm (HNSW) is omitted to preserve wire shape. */
+        assert(strstr(out.data, "\"algorithm\":") == NULL);
+        free(out.data);
+
+        printf("PASS: swappable ANN algorithm and product-quantization wire shape\n");
+    }
+
     printf("All wire-shape tests passed.\n");
     return 0;
 }
