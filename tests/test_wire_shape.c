@@ -15,6 +15,25 @@
 #include "../src/mongreldb.c"
 
 int main(void) {
+    // Raw JSON values carry embedding, sparse, set, array, and object values.
+    {
+        mongreldb_value value = {.tag = MDB_VAL_JSON, .v.json = "[1.0,-2.0]"};
+        sbuf out = {0};
+        json_serialize_value(&out, &value);
+        assert(strcmp(out.data, "[1.0,-2.0]") == 0);
+        free(out.data);
+
+        const char *raw = "[[7,0.5]]";
+        json_parser parser = {.p = raw, .end = raw + strlen(raw), .ok = 1};
+        sbuf blob = {0};
+        mongreldb_value decoded = {0};
+        parse_scalar_into(&parser, &decoded, &blob, NULL);
+        assert(parser.ok);
+        assert(decoded.tag == MDB_VAL_JSON);
+        assert(strcmp(decoded.v.json, "[[7,0.5]]") == 0);
+        free(blob.data);
+    }
+
     // Test 1: Basic column (no optional fields)
     {
         mongreldb_column col = {0};
@@ -133,7 +152,8 @@ int main(void) {
             "{\"checks\":[{\"id\":1,\"name\":\"score_nonneg\",\"expr\":"
             "{\"Ge\":[{\"Col\":1},{\"Lit\":{\"Int64\":0}}]}}]}";
         sbuf out = {0};
-        json_serialize_create_table(&out, "scores", &col, 1, checks);
+        json_serialize_create_table_with_indexes(
+            &out, "scores", &col, 1, checks, NULL, 0);
         assert(strstr(out.data, "\"constraints\":{\"checks\":[") != NULL);
         assert(strstr(out.data, "\"name\":\"score_nonneg\"") != NULL);
         free(out.data);
@@ -141,6 +161,51 @@ int main(void) {
     }
 
     // Test 8: history retention request shape and response decoding.
+    {
+        mongreldb_column columns[2] = {0};
+        columns[0].id = 1;
+        columns[0].name = "id";
+        columns[0].ty = "int64";
+        columns[0].primary_key = 1;
+        columns[1].id = 2;
+        columns[1].name = "embedding";
+        columns[1].ty = "embedding(384)";
+        columns[1].embedding_source_json =
+            "{\"kind\":\"configured_model\",\"provider_id\":\"docs\","
+            "\"model_id\":\"model\",\"model_version\":\"1\"}";
+        mongreldb_index indexes[] = {
+            {.name = "bm", .column_id = 1, .kind = MDB_INDEX_BITMAP},
+            {.name = "fm", .column_id = 1, .kind = MDB_INDEX_FM},
+            {.name = "ann", .column_id = 2, .kind = MDB_INDEX_ANN,
+             .predicate = "embedding IS NOT NULL", .ann_m = 24,
+             .ann_ef_construction = 96, .ann_ef_search = 48,
+             .ann_quantization = MDB_ANN_QUANTIZATION_DENSE},
+            {.name = "range", .column_id = 1, .kind = MDB_INDEX_LEARNED_RANGE,
+             .learned_range_epsilon = 8},
+            {.name = "minhash", .column_id = 1, .kind = MDB_INDEX_MIN_HASH,
+             .minhash_permutations = 64, .minhash_bands = 16},
+            {.name = "sparse", .column_id = 1, .kind = MDB_INDEX_SPARSE},
+        };
+        sbuf out = {0};
+        json_serialize_create_table_with_indexes(
+            &out, "search_docs", columns, 2, NULL, indexes, 6);
+        assert(strstr(out.data, "\"embedding_source\":{\"kind\":\"configured_model\"") != NULL);
+        assert(strstr(out.data, "\"kind\":\"bitmap\"") != NULL);
+        assert(strstr(out.data, "\"kind\":\"fm_index\"") != NULL);
+        assert(strstr(out.data, "\"kind\":\"ann\"") != NULL);
+        assert(strstr(out.data, "\"quantization\":\"dense\"") != NULL);
+        assert(strstr(out.data, "\"m\":24") != NULL);
+        assert(strstr(out.data, "\"predicate\":\"embedding IS NOT NULL\"") != NULL);
+        assert(strstr(out.data, "\"kind\":\"learned_range\"") != NULL);
+        assert(strstr(out.data, "\"epsilon\":8") != NULL);
+        assert(strstr(out.data, "\"kind\":\"minhash\"") != NULL);
+        assert(strstr(out.data, "\"permutations\":64") != NULL);
+        assert(strstr(out.data, "\"kind\":\"sparse\"") != NULL);
+        free(out.data);
+        printf("PASS: all index kinds and embedding source wire shape\n");
+    }
+
+    // Test 9: history retention request shape and response decoding.
     {
         char body[128];
         assert(history_retention_set_body(100, body, sizeof(body)) == 0);
@@ -157,7 +222,7 @@ int main(void) {
         printf("PASS: history retention wire shape\n");
     }
 
-    // Test 9: typed static defaults and dynamic default_expr in one payload.
+    // Test 10: typed static defaults and dynamic default_expr in one payload.
     {
         mongreldb_column cols[6] = {0};
         cols[0].id = 1; cols[0].name = "c_draft"; cols[0].ty = "varchar";
@@ -179,7 +244,8 @@ int main(void) {
         cols[5].default_expr = "now";
 
         sbuf out = {0};
-        json_serialize_create_table(&out, "defaults_matrix", cols, 6, NULL);
+        json_serialize_create_table_with_indexes(
+            &out, "defaults_matrix", cols, 6, NULL, NULL, 0);
         assert(strstr(out.data, "\"default_value\":\"draft\"") != NULL);
         assert(strstr(out.data, "\"default_value\":7") != NULL);
         assert(strstr(out.data, "\"default_value\":true") != NULL);
@@ -202,7 +268,7 @@ int main(void) {
         printf("PASS: typed default matrix wire shape\n");
     }
 
-    // Test 10: error propagation — non-2xx HTTP status maps to typed error codes.
+    // Test 11: error propagation — non-2xx HTTP status maps to typed error codes.
     //
     // The /history/retention transport functions propagate whatever code
     // do_request returns.  do_request classifies the HTTP status via
@@ -223,7 +289,7 @@ int main(void) {
         printf("PASS: HTTP error status propagation\n");
     }
 
-    // Test 11: error envelope decode — the JSON parser extracts message/code
+    // Test 12: error envelope decode — the JSON parser extracts message/code
     // from a flat error body the same way do_request does.
     {
         const char *flat =

@@ -121,6 +121,9 @@ typedef enum {
     MDB_VAL_INT64  = 2,
     MDB_VAL_DOUBLE = 3,
     MDB_VAL_STRING = 4,
+    /* Raw valid JSON. Enables embedding vectors, sparse vectors, set members,
+     * arrays, and objects. Result JSON is client-owned like MDB_VAL_STRING. */
+    MDB_VAL_JSON   = 5,
 } mongreldb_value_tag;
 
 typedef struct {
@@ -130,6 +133,7 @@ typedef struct {
         int64_t i64;      /* MDB_VAL_INT64 */
         double f64;       /* MDB_VAL_DOUBLE */
         const char *str;  /* MDB_VAL_STRING: NUL-terminated, client-owned */
+        const char *json; /* MDB_VAL_JSON: NUL-terminated raw JSON */
     } v;
 } mongreldb_value;
 
@@ -183,7 +187,37 @@ typedef struct {
      * ABI note: these fields extend mongreldb_column. Consumers built against
      * an older header must be rebuilt before linking this client version. */
     const char *default_expr;
+    /* Optional portable EmbeddingSource JSON. NULL = application supplied. */
+    const char *embedding_source_json;
 } mongreldb_column;
+
+typedef enum {
+    MDB_INDEX_BITMAP = 0,
+    MDB_INDEX_FM = 1,
+    MDB_INDEX_ANN = 2,
+    MDB_INDEX_LEARNED_RANGE = 3,
+    MDB_INDEX_MIN_HASH = 4,
+    MDB_INDEX_SPARSE = 5,
+} mongreldb_index_kind;
+
+typedef enum {
+    MDB_ANN_QUANTIZATION_BINARY_SIGN = 0,
+    MDB_ANN_QUANTIZATION_DENSE = 1,
+} mongreldb_ann_quantization;
+
+typedef struct {
+    const char *name;
+    int64_t column_id;
+    mongreldb_index_kind kind;
+    const char *predicate;
+    size_t ann_m;
+    size_t ann_ef_construction;
+    size_t ann_ef_search;
+    mongreldb_ann_quantization ann_quantization;
+    size_t minhash_permutations;
+    size_t minhash_bands;
+    size_t learned_range_epsilon;
+} mongreldb_index;
 
 /* A staged operation in a transaction. type selects the arm; the fields used
  * depend on the type:
@@ -247,6 +281,9 @@ typedef struct {
      * NULL). */
     int64_t int_value;
     int int_set;
+    /* Complete externally-tagged JsonCondition object. When non-NULL, this is
+     * sent verbatim and the typed fields above are ignored. */
+    const char *condition_json;
 } mongreldb_condition;
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
@@ -310,6 +347,17 @@ MONGRELDB_C_API int mongreldb_create_table_with_constraints_json(
                            const char *name,
                            const mongreldb_column *columns, size_t column_count,
                            const char *constraints_json,
+                           int64_t *out_table_id);
+
+/* Full schema creation. All six public index kinds are supported. Zero option
+ * values select engine defaults. Embedding model configuration belongs in
+ * each column's embedding_source_json. */
+MONGRELDB_C_API int mongreldb_create_table_with_schema_json(
+                           mongreldb_client *c,
+                           const char *name,
+                           const mongreldb_column *columns, size_t column_count,
+                           const char *constraints_json,
+                           const mongreldb_index *indexes, size_t index_count,
                            int64_t *out_table_id);
 
 /* mongreldb_drop_table drops a table by name. */

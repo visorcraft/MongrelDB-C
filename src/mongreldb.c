@@ -219,6 +219,9 @@ static void json_serialize_value(sbuf *out, const mongreldb_value *v) {
         case MDB_VAL_STRING:
             json_escape(out, v->v.str ? v->v.str : "");
             break;
+        case MDB_VAL_JSON:
+            sbuf_append_str(out, v->v.json ? v->v.json : "null");
+            break;
         default:
             sbuf_append_str(out, "null");
             break;
@@ -280,6 +283,63 @@ static void json_serialize_column(sbuf *out, const mongreldb_column *col) {
     } else if (col->default_value) {
         sbuf_append_str(out, ",\"default_value\":");
         json_escape(out, col->default_value);
+    }
+    if (col->embedding_source_json) {
+        sbuf_append_str(out, ",\"embedding_source\":");
+        sbuf_append_str(out, col->embedding_source_json);
+    }
+    sbuf_append_char(out, '}');
+}
+
+static const char *index_kind_name(mongreldb_index_kind kind) {
+    switch (kind) {
+        case MDB_INDEX_BITMAP: return "bitmap";
+        case MDB_INDEX_FM: return "fm_index";
+        case MDB_INDEX_ANN: return "ann";
+        case MDB_INDEX_LEARNED_RANGE: return "learned_range";
+        case MDB_INDEX_MIN_HASH: return "minhash";
+        case MDB_INDEX_SPARSE: return "sparse";
+        default: return "";
+    }
+}
+
+static void json_serialize_index(sbuf *out, const mongreldb_index *index) {
+    char number[64];
+    sbuf_append_str(out, "{\"name\":");
+    json_escape(out, index->name ? index->name : "");
+    snprintf(number, sizeof(number), ",\"column_id\":%lld,\"kind\":",
+             (long long)index->column_id);
+    sbuf_append_str(out, number);
+    json_escape(out, index_kind_name(index->kind));
+    if (index->predicate) {
+        sbuf_append_str(out, ",\"predicate\":");
+        json_escape(out, index->predicate);
+    }
+    if (index->kind == MDB_INDEX_ANN) {
+        size_t m = index->ann_m ? index->ann_m : 16;
+        size_t ef_construction = index->ann_ef_construction ? index->ann_ef_construction : 64;
+        size_t ef_search = index->ann_ef_search ? index->ann_ef_search : 64;
+        sbuf_append_str(out, ",\"options\":{\"ann\":{");
+        snprintf(number, sizeof(number),
+                 "\"m\":%zu,\"ef_construction\":%zu,\"ef_search\":%zu,\"quantization\":",
+                 m, ef_construction, ef_search);
+        sbuf_append_str(out, number);
+        json_escape(out, index->ann_quantization == MDB_ANN_QUANTIZATION_DENSE
+            ? "dense" : "binary_sign");
+        sbuf_append_str(out, "}}");
+    } else if (index->kind == MDB_INDEX_MIN_HASH) {
+        size_t permutations = index->minhash_permutations ? index->minhash_permutations : 128;
+        size_t bands = index->minhash_bands ? index->minhash_bands : 32;
+        snprintf(number, sizeof(number),
+                 ",\"options\":{\"minhash\":{\"permutations\":%zu,\"bands\":%zu}}",
+                 permutations, bands);
+        sbuf_append_str(out, number);
+    } else if (index->kind == MDB_INDEX_LEARNED_RANGE) {
+        size_t epsilon = index->learned_range_epsilon ? index->learned_range_epsilon : 16;
+        snprintf(number, sizeof(number),
+                 ",\"options\":{\"learned_range\":{\"epsilon\":%zu}}",
+                 epsilon);
+        sbuf_append_str(out, number);
     }
     sbuf_append_char(out, '}');
 }
@@ -763,6 +823,26 @@ static void parse_scalar_into(json_parser *j, mongreldb_value *v, sbuf *blob,
             v->tag = MDB_VAL_DOUBLE;
             v->v.f64 = strtod(buf, NULL);
         }
+    } else if (ch == '{' || ch == '[') {
+        const char *start = j->p;
+        jp_value(j);
+        if (!j->ok) {
+            return;
+        }
+        size_t len = (size_t)(j->p - start);
+        if (sbuf_reserve(blob, len) != 0) {
+            j->ok = 0;
+            return;
+        }
+        size_t base = blob->len;
+        memcpy(blob->data + base, start, len);
+        blob->data[base + len] = '\0';
+        blob->len += len + 1;
+        v->tag = MDB_VAL_JSON;
+        v->v.json = blob->data + base;
+        if (str_off_out) {
+            *str_off_out = base;
+        }
     } else if (ch == 'n') {
         jp_literal(j); /* null */
     } else {
@@ -1198,11 +1278,13 @@ int mongreldb_table_names(mongreldb_client *c,
     return MDB_OK;
 }
 
-static void json_serialize_create_table(sbuf *body,
+static void json_serialize_create_table_with_indexes(sbuf *body,
                                         const char *name,
                                         const mongreldb_column *columns,
                                         size_t column_count,
-                                        const char *constraints_json) {
+                                        const char *constraints_json,
+                                        const mongreldb_index *indexes,
+                                        size_t index_count) {
     sbuf_append_str(body, "{\"name\":");
     json_escape(body, name);
     sbuf_append_str(body, ",\"columns\":[");
@@ -1216,6 +1298,14 @@ static void json_serialize_create_table(sbuf *body,
     if (constraints_json && constraints_json[0]) {
         sbuf_append_str(body, ",\"constraints\":");
         sbuf_append_str(body, constraints_json);
+    }
+    if (indexes && index_count > 0) {
+        sbuf_append_str(body, ",\"indexes\":[");
+        for (size_t i = 0; i < index_count; i++) {
+            if (i > 0) sbuf_append_char(body, ',');
+            json_serialize_index(body, &indexes[i]);
+        }
+        sbuf_append_char(body, ']');
     }
     sbuf_append_char(body, '}');
 }
@@ -1284,6 +1374,17 @@ int mongreldb_create_table_with_constraints_json(
                            const mongreldb_column *columns, size_t column_count,
                            const char *constraints_json,
                            int64_t *out_table_id) {
+    return mongreldb_create_table_with_schema_json(c, name, columns, column_count,
+        constraints_json, NULL, 0, out_table_id);
+}
+
+int mongreldb_create_table_with_schema_json(
+                           mongreldb_client *c,
+                           const char *name,
+                           const mongreldb_column *columns, size_t column_count,
+                           const char *constraints_json,
+                           const mongreldb_index *indexes, size_t index_count,
+                           int64_t *out_table_id) {
     if (!c || !name || !columns) {
         return MDB_ERR_INVALID_ARG;
     }
@@ -1292,8 +1393,8 @@ int mongreldb_create_table_with_constraints_json(
     }
     sbuf body;
     sbuf_init(&body);
-    json_serialize_create_table(&body, name, columns, column_count,
-                                constraints_json);
+    json_serialize_create_table_with_indexes(&body, name, columns, column_count,
+                                             constraints_json, indexes, index_count);
 
     int rc = c_post(c, "/kit/create_table", body.data);
     free(body.data);
@@ -1491,6 +1592,10 @@ int mongreldb_commit(mongreldb_client *c,
 /* ── Public API: query ────────────────────────────────────────────────── */
 
 static void serialize_condition(sbuf *body, const mongreldb_condition *cond) {
+    if (cond->condition_json && cond->condition_json[0]) {
+        sbuf_append_str(body, cond->condition_json);
+        return;
+    }
     sbuf_append_char(body, '{');
     switch (cond->kind) {
         case MDB_COND_PK:
@@ -1941,9 +2046,15 @@ int mongreldb_query_page(mongreldb_client *c,
     }
     for (size_t i = 0; i < total_cells_global; i++) {
         if (c->cell_str_offs[i] != (size_t)-1 &&
-            c->cells_arr[i].value.tag == MDB_VAL_STRING) {
-            c->cells_arr[i].value.v.str =
-                c->values_blob.data + c->cell_str_offs[i];
+            (c->cells_arr[i].value.tag == MDB_VAL_STRING ||
+             c->cells_arr[i].value.tag == MDB_VAL_JSON)) {
+            if (c->cells_arr[i].value.tag == MDB_VAL_STRING) {
+                c->cells_arr[i].value.v.str =
+                    c->values_blob.data + c->cell_str_offs[i];
+            } else {
+                c->cells_arr[i].value.v.json =
+                    c->values_blob.data + c->cell_str_offs[i];
+            }
         }
     }
 

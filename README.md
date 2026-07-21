@@ -203,6 +203,11 @@ if (res.truncated) {
 }
 ```
 
+For `ann`, `sparse_match`, `minhash_similar_members`, `bitmap_in`, and every
+other complete server condition, set `condition_json` to the externally tagged
+JSON object. Use `MDB_VAL_JSON` for embedding vectors, sparse pairs, sets,
+arrays, and object cell values.
+
 ## Schema constraints
 
 Optional fields on `mongreldb_column` let you constrain what goes into a column
@@ -331,6 +336,7 @@ default:
 | `mongreldb_table_names(c, &names, &count)` | List table names |
 | `mongreldb_create_table(c, name, cols, n, &tid)` | Create a table; column descriptors may carry enum/default fields |
 | `mongreldb_create_table_with_constraints_json(c, name, cols, n, json, &tid)` | Create a table with native `constraints` JSON (including CHECKs) |
+| `mongreldb_create_table_with_schema_json(c, name, cols, n, constraints, indexes, count, &tid)` | Create a table with all six index kinds and options |
 | `mongreldb_history_retention_get(c, &ret)` | Inspect the MVCC history retention window |
 | `mongreldb_history_retention_set(c, epochs, &ret)` | Resize the MVCC history retention window |
 | `mongreldb_drop_table(c, name)` | Drop a table |
