@@ -303,8 +303,26 @@ static const char *index_kind_name(mongreldb_index_kind kind) {
     }
 }
 
+static const char *ann_quantization_name(mongreldb_ann_quantization q) {
+    switch (q) {
+        case MDB_ANN_QUANTIZATION_DENSE: return "dense";
+        case MDB_ANN_QUANTIZATION_PRODUCT: return "product";
+        case MDB_ANN_QUANTIZATION_BINARY_SIGN:
+        default: return "binary_sign";
+    }
+}
+
+static const char *ann_algorithm_name(mongreldb_ann_algorithm a) {
+    switch (a) {
+        case MDB_ANN_ALGORITHM_DISKANN: return "diskann";
+        case MDB_ANN_ALGORITHM_IVF: return "ivf";
+        case MDB_ANN_ALGORITHM_HNSW:
+        default: return "hnsw";
+    }
+}
+
 static void json_serialize_index(sbuf *out, const mongreldb_index *index) {
-    char number[64];
+    char number[96];
     sbuf_append_str(out, "{\"name\":");
     json_escape(out, index->name ? index->name : "");
     snprintf(number, sizeof(number), ",\"column_id\":%lld,\"kind\":",
@@ -319,13 +337,46 @@ static void json_serialize_index(sbuf *out, const mongreldb_index *index) {
         size_t m = index->ann_m ? index->ann_m : 16;
         size_t ef_construction = index->ann_ef_construction ? index->ann_ef_construction : 64;
         size_t ef_search = index->ann_ef_search ? index->ann_ef_search : 64;
+        mongreldb_ann_algorithm algorithm = index->ann_algorithm;
         sbuf_append_str(out, ",\"options\":{\"ann\":{");
         snprintf(number, sizeof(number),
                  "\"m\":%zu,\"ef_construction\":%zu,\"ef_search\":%zu,\"quantization\":",
                  m, ef_construction, ef_search);
         sbuf_append_str(out, number);
-        json_escape(out, index->ann_quantization == MDB_ANN_QUANTIZATION_DENSE
-            ? "dense" : "binary_sign");
+        json_escape(out, ann_quantization_name(index->ann_quantization));
+        /* algorithm: emit only when not the default (hnsw), to preserve the
+         * wire shape for existing clients. */
+        if (algorithm != MDB_ANN_ALGORITHM_HNSW) {
+            sbuf_append_str(out, ",\"algorithm\":");
+            json_escape(out, ann_algorithm_name(algorithm));
+        }
+        /* Per-algorithm tuning: emit only when non-default, matching the
+         * engine's skip_serializing_if convention. */
+        if (algorithm == MDB_ANN_ALGORITHM_DISKANN) {
+            size_t r = index->diskann_r ? index->diskann_r : 64;
+            size_t l = index->diskann_l ? index->diskann_l : 128;
+            size_t beam = index->diskann_beam_width ? index->diskann_beam_width : 8;
+            uint32_t alpha = index->diskann_alpha ? index->diskann_alpha : 120;
+            snprintf(number, sizeof(number),
+                     ",\"diskann\":{\"r\":%zu,\"l\":%zu,\"beam_width\":%zu,\"alpha\":%u}",
+                     r, l, beam, alpha);
+            sbuf_append_str(out, number);
+        } else if (algorithm == MDB_ANN_ALGORITHM_IVF) {
+            size_t nlist = index->ivf_nlist ? index->ivf_nlist : 256;
+            size_t nprobe = index->ivf_nprobe ? index->ivf_nprobe : 8;
+            snprintf(number, sizeof(number),
+                     ",\"ivf\":{\"nlist\":%zu,\"nprobe\":%zu}", nlist, nprobe);
+            sbuf_append_str(out, number);
+        }
+        if (index->ann_quantization == MDB_ANN_QUANTIZATION_PRODUCT) {
+            size_t training = index->pq_training_samples ? index->pq_training_samples : 256000;
+            uint64_t seed = index->pq_seed ? index->pq_seed : 0x9E3779B97F4A7C15ULL;
+            size_t rerank = index->pq_rerank_factor ? index->pq_rerank_factor : 5;
+            snprintf(number, sizeof(number),
+                     ",\"product\":{\"training_samples\":%zu,\"seed\":%llu,\"rerank_factor\":%zu}",
+                     training, (unsigned long long)seed, rerank);
+            sbuf_append_str(out, number);
+        }
         sbuf_append_str(out, "}}");
     } else if (index->kind == MDB_INDEX_MIN_HASH) {
         size_t permutations = index->minhash_permutations ? index->minhash_permutations : 128;

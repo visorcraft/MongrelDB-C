@@ -75,8 +75,8 @@ extern "C" {
 /* ── Version ────────────────────────────────────────────────────────────── */
 
 #define MONGRELDB_C_VERSION_MAJOR 0
-#define MONGRELDB_C_VERSION_MINOR 59
-#define MONGRELDB_C_VERSION_PATCH 1
+#define MONGRELDB_C_VERSION_MINOR 63
+#define MONGRELDB_C_VERSION_PATCH 0
 
 /* ── Error codes ────────────────────────────────────────────────────────── */
 /*
@@ -203,7 +203,15 @@ typedef enum {
 typedef enum {
     MDB_ANN_QUANTIZATION_BINARY_SIGN = 0,
     MDB_ANN_QUANTIZATION_DENSE = 1,
+    MDB_ANN_QUANTIZATION_PRODUCT = 2,
 } mongreldb_ann_quantization;
+
+/* Phase 2: ANN graph/structure algorithm. Orthogonal to quantization. */
+typedef enum {
+    MDB_ANN_ALGORITHM_HNSW = 0,
+    MDB_ANN_ALGORITHM_DISKANN = 1,
+    MDB_ANN_ALGORITHM_IVF = 2,
+} mongreldb_ann_algorithm;
 
 typedef struct {
     const char *name;
@@ -214,6 +222,21 @@ typedef struct {
     size_t ann_ef_construction;
     size_t ann_ef_search;
     mongreldb_ann_quantization ann_quantization;
+    /* Phase 2: swappable algorithm + per-algorithm/quantization tuning.
+     * Zero ann_algorithm selects HNSW (the default); zero numeric fields
+     * select engine defaults. */
+    mongreldb_ann_algorithm ann_algorithm;
+    size_t diskann_r;
+    size_t diskann_l;
+    size_t diskann_beam_width;
+    uint32_t diskann_alpha;
+    size_t ivf_nlist;
+    size_t ivf_nprobe;
+    uint16_t pq_num_subvectors;
+    uint8_t pq_bits;
+    size_t pq_training_samples;
+    uint64_t pq_seed;
+    size_t pq_rerank_factor;
     size_t minhash_permutations;
     size_t minhash_bands;
     size_t learned_range_epsilon;
