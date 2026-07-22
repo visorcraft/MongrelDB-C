@@ -718,6 +718,101 @@ static int json_get_number(const char *src, size_t len,
     }
 }
 
+/* json_get_object_raw extracts a nested JSON object span (including braces).
+ * Returns 1 if the key is present and its value is an object. *out_start /
+ * *out_len refer into src (not allocated). */
+static int json_get_object_raw(const char *src, size_t len, const char *key,
+                               const char **out_start, size_t *out_len) {
+    if (out_start) {
+        *out_start = NULL;
+    }
+    if (out_len) {
+        *out_len = 0;
+    }
+    json_parser j = jp_parse_value(src, len);
+    if (!j.ok || jp_peek(&j) != '{') {
+        return 0;
+    }
+    j.p++;
+    jp_skip_ws(&j);
+    if (jp_peek(&j) == '}') {
+        return 0;
+    }
+    for (;;) {
+        jp_skip_ws(&j);
+        if (jp_peek(&j) != '"') {
+            return 0;
+        }
+        const char *kstart = j.p + 1;
+        jp_string(&j);
+        if (!j.ok) {
+            return 0;
+        }
+        size_t klen = (size_t)(j.p - 1 - kstart);
+        if (jp_peek(&j) != ':') {
+            return 0;
+        }
+        j.p++;
+        int ch = jp_peek(&j);
+        if (klen == strlen(key) && memcmp(kstart, key, klen) == 0 && ch == '{') {
+            const char *vstart = j.p;
+            jp_value(&j);
+            if (!j.ok) {
+                return 0;
+            }
+            if (out_start) {
+                *out_start = vstart;
+            }
+            if (out_len) {
+                *out_len = (size_t)(j.p - vstart);
+            }
+            return 1;
+        }
+        jp_value(&j);
+        if (!j.ok) {
+            return 0;
+        }
+        ch = jp_peek(&j);
+        if (ch == ',') {
+            j.p++;
+            continue;
+        }
+        return ch == '}';
+    }
+}
+
+/* Append a decoded JSON string field into blob. Writes the byte offset of
+ * the NUL-terminated string into *out_off (SIZE_MAX if absent). Returns 1
+ * if the key was present as a string. Callers must rebaseline pointers from
+ * offsets only after all appends complete (blob may realloc). */
+static int json_copy_string_field_off(const char *src, size_t len, const char *key,
+                                      sbuf *blob, size_t *out_off) {
+    if (out_off) {
+        *out_off = SIZE_MAX;
+    }
+    char *tmp = NULL;
+    if (!json_get_string(src, len, key, &tmp) || !tmp) {
+        return 0;
+    }
+    size_t off = blob->len;
+    if (sbuf_append_str(blob, tmp) != 0 || sbuf_append_char(blob, '\0') != 0) {
+        free(tmp);
+        return 0;
+    }
+    free(tmp);
+    if (out_off) {
+        *out_off = off;
+    }
+    return 1;
+}
+
+static const char *blob_str_at(const sbuf *blob, size_t off) {
+    if (!blob || !blob->data || off == SIZE_MAX || off >= blob->len) {
+        return NULL;
+    }
+    return blob->data + off;
+}
+
 /* json_get_bool extracts a boolean field. Returns 1 if found. */
 static int json_get_bool(const char *src, size_t len,
                          const char *key, int *out_bool) {
@@ -2165,5 +2260,359 @@ int mongreldb_schema_for(mongreldb_client *c, const char *table,
         return rc;
     }
     *out_body = c->recv.data ? c->recv.data : "";
+    return MDB_OK;
+}
+
+/* ── Durable recovery parsers (0.64+) ──────────────────────────────────── */
+
+static void parse_commit_hlc(const char *json, size_t len, mongreldb_commit_hlc *out) {
+    memset(out, 0, sizeof(*out));
+    int64_t phys = 0;
+    if (!json_get_number(json, len, "physical_micros", NULL, &phys)) {
+        return;
+    }
+    out->physical_micros = (uint64_t)phys;
+    int64_t logical = 0;
+    int64_t tie = 0;
+    json_get_number(json, len, "logical", NULL, &logical);
+    json_get_number(json, len, "node_tiebreaker", NULL, &tie);
+    out->logical = (uint32_t)logical;
+    out->node_tiebreaker = (uint32_t)tie;
+    out->present = 1;
+}
+
+/* Temporary offset-based durable outcome used while the string blob is still
+ * being filled; pointers are resolved after the last append. */
+typedef struct {
+    mongreldb_durable_outcome fields;
+    size_t last_commit_epoch_text_off;
+    size_t serialization_off;
+    size_t serialization_state_off;
+    size_t terminal_state_off;
+} durable_outcome_offs;
+
+static void parse_durable_outcome_offs(const char *json, size_t len,
+                                       durable_outcome_offs *tmp, sbuf *blob) {
+    memset(tmp, 0, sizeof(*tmp));
+    tmp->last_commit_epoch_text_off = SIZE_MAX;
+    tmp->serialization_off = SIZE_MAX;
+    tmp->serialization_state_off = SIZE_MAX;
+    tmp->terminal_state_off = SIZE_MAX;
+    if (!json || !len) {
+        return;
+    }
+    mongreldb_durable_outcome *out = &tmp->fields;
+    int b = 0;
+    if (json_get_bool(json, len, "committed", &b)) {
+        out->committed = b;
+        out->committed_set = 1;
+    }
+    int64_t n = 0;
+    if (json_get_number(json, len, "committed_statements", NULL, &n)) {
+        out->committed_statements = n;
+        out->committed_statements_set = 1;
+    }
+    if (json_get_number(json, len, "last_commit_epoch", NULL, &n)) {
+        out->last_commit_epoch = (uint64_t)n;
+        out->last_commit_epoch_set = 1;
+    }
+    json_copy_string_field_off(json, len, "last_commit_epoch_text", blob,
+                               &tmp->last_commit_epoch_text_off);
+    {
+        const char *hlc_raw = NULL;
+        size_t hlc_len = 0;
+        if (json_get_object_raw(json, len, "last_commit_hlc", &hlc_raw, &hlc_len)) {
+            parse_commit_hlc(hlc_raw, hlc_len, &out->last_commit_hlc);
+        }
+    }
+    if (json_get_number(json, len, "first_commit_statement_index", NULL, &n)) {
+        out->first_commit_statement_index = n;
+        out->first_commit_statement_index_set = 1;
+    }
+    if (json_get_number(json, len, "last_commit_statement_index", NULL, &n)) {
+        out->last_commit_statement_index = n;
+        out->last_commit_statement_index_set = 1;
+    }
+    if (json_get_number(json, len, "completed_statements", NULL, &n)) {
+        out->completed_statements = n;
+        out->completed_statements_set = 1;
+    }
+    if (json_get_number(json, len, "statement_index", NULL, &n)) {
+        out->statement_index = n;
+        out->statement_index_set = 1;
+    }
+    json_copy_string_field_off(json, len, "serialization", blob,
+                               &tmp->serialization_off);
+    json_copy_string_field_off(json, len, "serialization_state", blob,
+                               &tmp->serialization_state_off);
+    json_copy_string_field_off(json, len, "terminal_state", blob,
+                               &tmp->terminal_state_off);
+}
+
+static void durable_outcome_resolve(durable_outcome_offs *tmp, sbuf *blob,
+                                    mongreldb_durable_outcome *out) {
+    *out = tmp->fields;
+    out->last_commit_epoch_text = blob_str_at(blob, tmp->last_commit_epoch_text_off);
+    out->serialization = blob_str_at(blob, tmp->serialization_off);
+    out->serialization_state = blob_str_at(blob, tmp->serialization_state_off);
+    out->terminal_state = blob_str_at(blob, tmp->terminal_state_off);
+}
+
+/* Offline-testable decoder used by wire tests (includes this .c). */
+static int query_status_decode_json(const char *json, size_t len,
+                                    mongreldb_query_status *out, sbuf *blob) {
+    memset(out, 0, sizeof(*out));
+    if (!json || !out || !blob) {
+        return MDB_ERR_INVALID_ARG;
+    }
+    sbuf_free(blob);
+    sbuf_init(blob);
+
+    size_t query_id_off = SIZE_MAX;
+    size_t status_off = SIZE_MAX;
+    size_t state_off = SIZE_MAX;
+    size_t server_state_off = SIZE_MAX;
+    size_t terminal_state_off = SIZE_MAX;
+    size_t last_commit_epoch_text_off = SIZE_MAX;
+    size_t cancel_outcome_off = SIZE_MAX;
+    size_t cancellation_reason_off = SIZE_MAX;
+
+    json_copy_string_field_off(json, len, "query_id", blob, &query_id_off);
+    json_copy_string_field_off(json, len, "status", blob, &status_off);
+    json_copy_string_field_off(json, len, "state", blob, &state_off);
+    json_copy_string_field_off(json, len, "server_state", blob, &server_state_off);
+    json_copy_string_field_off(json, len, "terminal_state", blob, &terminal_state_off);
+
+    int b = 0;
+    if (json_get_bool(json, len, "committed", &b)) {
+        out->committed = b;
+        out->committed_set = 1;
+    }
+    int64_t n = 0;
+    if (json_get_number(json, len, "committed_statements", NULL, &n)) {
+        out->committed_statements = n;
+        out->committed_statements_set = 1;
+    }
+    if (json_get_number(json, len, "last_commit_epoch", NULL, &n)) {
+        out->last_commit_epoch = (uint64_t)n;
+        out->last_commit_epoch_set = 1;
+    }
+    json_copy_string_field_off(json, len, "last_commit_epoch_text", blob,
+                               &last_commit_epoch_text_off);
+    {
+        const char *hlc_raw = NULL;
+        size_t hlc_len = 0;
+        if (json_get_object_raw(json, len, "last_commit_hlc", &hlc_raw, &hlc_len)) {
+            parse_commit_hlc(hlc_raw, hlc_len, &out->last_commit_hlc);
+        }
+    }
+    if (json_get_number(json, len, "first_commit_statement_index", NULL, &n)) {
+        out->first_commit_statement_index = n;
+        out->first_commit_statement_index_set = 1;
+    }
+    if (json_get_number(json, len, "last_commit_statement_index", NULL, &n)) {
+        out->last_commit_statement_index = n;
+        out->last_commit_statement_index_set = 1;
+    }
+    if (json_get_number(json, len, "completed_statements", NULL, &n)) {
+        out->completed_statements = n;
+        out->completed_statements_set = 1;
+    }
+    if (json_get_number(json, len, "statement_index", NULL, &n)) {
+        out->statement_index = n;
+        out->statement_index_set = 1;
+    }
+    json_copy_string_field_off(json, len, "cancel_outcome", blob, &cancel_outcome_off);
+    json_copy_string_field_off(json, len, "cancellation_reason", blob,
+                               &cancellation_reason_off);
+    if (json_get_bool(json, len, "retryable", &b)) {
+        out->retryable = b;
+        out->retryable_set = 1;
+    }
+
+    durable_outcome_offs outcome_tmp;
+    durable_outcome_offs durable_tmp;
+    memset(&outcome_tmp, 0, sizeof(outcome_tmp));
+    memset(&durable_tmp, 0, sizeof(durable_tmp));
+    outcome_tmp.last_commit_epoch_text_off = SIZE_MAX;
+    outcome_tmp.serialization_off = SIZE_MAX;
+    outcome_tmp.serialization_state_off = SIZE_MAX;
+    outcome_tmp.terminal_state_off = SIZE_MAX;
+    durable_tmp.last_commit_epoch_text_off = SIZE_MAX;
+    durable_tmp.serialization_off = SIZE_MAX;
+    durable_tmp.serialization_state_off = SIZE_MAX;
+    durable_tmp.terminal_state_off = SIZE_MAX;
+
+    {
+        const char *obj = NULL;
+        size_t obj_len = 0;
+        if (json_get_object_raw(json, len, "outcome", &obj, &obj_len)) {
+            parse_durable_outcome_offs(obj, obj_len, &outcome_tmp, blob);
+        }
+        if (json_get_object_raw(json, len, "durable", &obj, &obj_len)) {
+            parse_durable_outcome_offs(obj, obj_len, &durable_tmp, blob);
+            out->durable_set = 1;
+        }
+    }
+
+    /* Blob is now stable; resolve all string pointers. */
+    out->query_id = blob_str_at(blob, query_id_off);
+    out->status = blob_str_at(blob, status_off);
+    out->state = blob_str_at(blob, state_off);
+    out->server_state = blob_str_at(blob, server_state_off);
+    if (!out->server_state) {
+        out->server_state = out->state;
+    }
+    out->terminal_state = blob_str_at(blob, terminal_state_off);
+    out->last_commit_epoch_text = blob_str_at(blob, last_commit_epoch_text_off);
+    out->cancel_outcome = blob_str_at(blob, cancel_outcome_off);
+    out->cancellation_reason = blob_str_at(blob, cancellation_reason_off);
+    durable_outcome_resolve(&outcome_tmp, blob, &out->outcome);
+    durable_outcome_resolve(&durable_tmp, blob, &out->durable);
+    return MDB_OK;
+}
+
+/* Build POST /kit/retrieve_text body. k <= 0 omits k. */
+static int retrieve_text_build_body(const char *table, int64_t embedding_column,
+                                    const char *text, int64_t k, sbuf *out) {
+    if (!table || !text || !out) {
+        return -1;
+    }
+    sbuf_free(out);
+    sbuf_init(out);
+    if (sbuf_append_str(out, "{\"table\":") != 0) {
+        return -1;
+    }
+    json_escape(out, table);
+    char num[64];
+    snprintf(num, sizeof(num), ",\"embedding_column\":%lld,\"text\":",
+             (long long)embedding_column);
+    if (sbuf_append_str(out, num) != 0) {
+        return -1;
+    }
+    json_escape(out, text);
+    if (k > 0) {
+        snprintf(num, sizeof(num), ",\"k\":%lld", (long long)k);
+        if (sbuf_append_str(out, num) != 0) {
+            return -1;
+        }
+    }
+    if (sbuf_append_str(out, "}") != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+int mongreldb_query_status_get(mongreldb_client *c, const char *query_id,
+                               mongreldb_query_status *out) {
+    if (!c || !query_id || !*query_id || !out) {
+        if (c && (!query_id || !*query_id)) {
+            set_error(c, MDB_ERR_INVALID_ARG, "mongreldb: query_id is required");
+        }
+        return MDB_ERR_INVALID_ARG;
+    }
+    sbuf path;
+    sbuf_init(&path);
+    sbuf_append_str(&path, "/queries/");
+    url_path_encode(&path, query_id);
+    int rc = c_get(c, path.data);
+    free(path.data);
+    if (rc != MDB_OK) {
+        return rc;
+    }
+    /* Decode into values_blob so strings live until the next call. */
+    return query_status_decode_json(c->recv.data, c->recv.len, out, &c->values_blob);
+}
+
+const mongreldb_commit_hlc *
+mongreldb_query_status_commit_hlc(const mongreldb_query_status *status) {
+    if (!status) {
+        return NULL;
+    }
+    if (status->durable_set && status->durable.last_commit_hlc.present) {
+        return &status->durable.last_commit_hlc;
+    }
+    if (status->outcome.last_commit_hlc.present) {
+        return &status->outcome.last_commit_hlc;
+    }
+    if (status->last_commit_hlc.present) {
+        return &status->last_commit_hlc;
+    }
+    return NULL;
+}
+
+const char *
+mongreldb_query_status_serialization_state(const mongreldb_query_status *status) {
+    if (!status) {
+        return "";
+    }
+    if (status->durable_set) {
+        if (status->durable.serialization_state &&
+            status->durable.serialization_state[0]) {
+            return status->durable.serialization_state;
+        }
+        if (status->durable.serialization && status->durable.serialization[0]) {
+            return status->durable.serialization;
+        }
+    }
+    if (status->outcome.serialization_state &&
+        status->outcome.serialization_state[0]) {
+        return status->outcome.serialization_state;
+    }
+    if (status->outcome.serialization && status->outcome.serialization[0]) {
+        return status->outcome.serialization;
+    }
+    return "";
+}
+
+int mongreldb_cancel_query(mongreldb_client *c, const char *query_id,
+                           const char **out_body) {
+    if (!c || !query_id || !*query_id) {
+        if (c) {
+            set_error(c, MDB_ERR_INVALID_ARG, "mongreldb: query_id is required");
+        }
+        return MDB_ERR_INVALID_ARG;
+    }
+    sbuf path;
+    sbuf_init(&path);
+    sbuf_append_str(&path, "/queries/");
+    url_path_encode(&path, query_id);
+    sbuf_append_str(&path, "/cancel");
+    int rc = c_post(c, path.data, "{}");
+    free(path.data);
+    if (rc != MDB_OK) {
+        return rc;
+    }
+    if (out_body) {
+        *out_body = c->recv.data ? c->recv.data : "";
+    }
+    return MDB_OK;
+}
+
+int mongreldb_retrieve_text(mongreldb_client *c, const char *table,
+                            int64_t embedding_column, const char *text,
+                            int64_t k, const char **out_body) {
+    if (!c || !table || !*table || !text || !*text) {
+        if (c) {
+            set_error(c, MDB_ERR_INVALID_ARG,
+                      "mongreldb: table and text are required");
+        }
+        return MDB_ERR_INVALID_ARG;
+    }
+    sbuf body;
+    sbuf_init(&body);
+    if (retrieve_text_build_body(table, embedding_column, text, k, &body) != 0) {
+        free(body.data);
+        set_error(c, MDB_ERR_NOMEM, "out of memory");
+        return MDB_ERR_NOMEM;
+    }
+    int rc = c_post(c, "/kit/retrieve_text", body.data);
+    free(body.data);
+    if (rc != MDB_OK) {
+        return rc;
+    }
+    if (out_body) {
+        *out_body = c->recv.data ? c->recv.data : "";
+    }
     return MDB_OK;
 }

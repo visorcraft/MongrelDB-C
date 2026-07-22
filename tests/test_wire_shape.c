@@ -356,6 +356,131 @@ int main(void) {
         printf("PASS: swappable ANN algorithm and product-quantization wire shape\n");
     }
 
+    // Test 12: durable HLC query-status decode (structural, no free-form scrape).
+    {
+        const char *raw =
+            "{"
+            "\"query_id\":\"abcdefabcdefabcdefabcdefabcdefab\","
+            "\"status\":\"committed\","
+            "\"state\":\"completed\","
+            "\"server_state\":\"completed\","
+            "\"terminal_state\":\"committed\","
+            "\"committed\":true,"
+            "\"committed_statements\":1,"
+            "\"last_commit_epoch\":17,"
+            "\"last_commit_epoch_text\":\"17\","
+            "\"last_commit_hlc\":{"
+            "\"physical_micros\":1700000000000000,"
+            "\"logical\":3,"
+            "\"node_tiebreaker\":7"
+            "},"
+            "\"outcome\":{"
+            "\"committed\":true,"
+            "\"committed_statements\":1,"
+            "\"last_commit_epoch\":17,"
+            "\"last_commit_hlc\":{"
+            "\"physical_micros\":1700000000000000,"
+            "\"logical\":3,"
+            "\"node_tiebreaker\":7"
+            "},"
+            "\"serialization\":\"succeeded\","
+            "\"serialization_state\":\"succeeded\","
+            "\"terminal_state\":\"committed\""
+            "},"
+            "\"durable\":{"
+            "\"committed\":true,"
+            "\"committed_statements\":1,"
+            "\"last_commit_epoch\":17,"
+            "\"last_commit_hlc\":{"
+            "\"physical_micros\":1700000000000000,"
+            "\"logical\":3,"
+            "\"node_tiebreaker\":7"
+            "},"
+            "\"serialization\":\"succeeded\","
+            "\"serialization_state\":\"succeeded\","
+            "\"terminal_state\":\"committed\""
+            "}"
+            "}";
+        sbuf blob = {0};
+        mongreldb_query_status st = {0};
+        assert(query_status_decode_json(raw, strlen(raw), &st, &blob) == MDB_OK);
+        assert(st.committed_set && st.committed == 1);
+        assert(st.durable_set);
+        assert(st.outcome.last_commit_epoch_set &&
+               st.outcome.last_commit_epoch == 17);
+        const mongreldb_commit_hlc *hlc = mongreldb_query_status_commit_hlc(&st);
+        assert(hlc != NULL);
+        assert(hlc->physical_micros == 1700000000000000ULL);
+        assert(hlc->logical == 3);
+        assert(hlc->node_tiebreaker == 7);
+        assert(strcmp(mongreldb_query_status_serialization_state(&st),
+                      "succeeded") == 0);
+        free(blob.data);
+        printf("PASS: durable HLC query-status structural decode\n");
+    }
+
+    // Test 13: commit_hlc prefers durable over outcome over top-level.
+    {
+        const char *raw =
+            "{"
+            "\"last_commit_hlc\":{"
+            "\"physical_micros\":1,\"logical\":1,\"node_tiebreaker\":1"
+            "},"
+            "\"outcome\":{"
+            "\"last_commit_hlc\":{"
+            "\"physical_micros\":2,\"logical\":2,\"node_tiebreaker\":2"
+            "}"
+            "},"
+            "\"durable\":{"
+            "\"last_commit_hlc\":{"
+            "\"physical_micros\":3,\"logical\":3,\"node_tiebreaker\":3"
+            "}"
+            "}"
+            "}";
+        sbuf blob = {0};
+        mongreldb_query_status st = {0};
+        assert(query_status_decode_json(raw, strlen(raw), &st, &blob) == MDB_OK);
+        const mongreldb_commit_hlc *hlc = mongreldb_query_status_commit_hlc(&st);
+        assert(hlc != NULL && hlc->physical_micros == 3);
+        free(blob.data);
+
+        const char *raw2 =
+            "{"
+            "\"last_commit_hlc\":{"
+            "\"physical_micros\":1,\"logical\":1,\"node_tiebreaker\":1"
+            "},"
+            "\"outcome\":{"
+            "\"last_commit_hlc\":{"
+            "\"physical_micros\":2,\"logical\":2,\"node_tiebreaker\":2"
+            "}"
+            "}"
+            "}";
+        blob = (sbuf){0};
+        st = (mongreldb_query_status){0};
+        assert(query_status_decode_json(raw2, strlen(raw2), &st, &blob) == MDB_OK);
+        hlc = mongreldb_query_status_commit_hlc(&st);
+        assert(hlc != NULL && hlc->physical_micros == 2);
+        free(blob.data);
+        printf("PASS: commit_hlc preference order durable > outcome > top\n");
+    }
+
+    // Test 14: retrieve_text request body wire shape.
+    {
+        sbuf body = {0};
+        assert(retrieve_text_build_body("docs", 3, "cat sat", 5, &body) == 0);
+        assert(strstr(body.data, "\"table\":\"docs\"") != NULL);
+        assert(strstr(body.data, "\"embedding_column\":3") != NULL);
+        assert(strstr(body.data, "\"text\":\"cat sat\"") != NULL);
+        assert(strstr(body.data, "\"k\":5") != NULL);
+        free(body.data);
+
+        body = (sbuf){0};
+        assert(retrieve_text_build_body("docs", 3, "cat sat", 0, &body) == 0);
+        assert(strstr(body.data, "\"k\":") == NULL);
+        free(body.data);
+        printf("PASS: retrieve_text request body wire shape\n");
+    }
+
     printf("All wire-shape tests passed.\n");
     return 0;
 }

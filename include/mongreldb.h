@@ -75,7 +75,7 @@ extern "C" {
 /* ── Version ────────────────────────────────────────────────────────────── */
 
 #define MONGRELDB_C_VERSION_MAJOR 0
-#define MONGRELDB_C_VERSION_MINOR 63
+#define MONGRELDB_C_VERSION_MINOR 64
 #define MONGRELDB_C_VERSION_PATCH 0
 
 /* ── Error codes ────────────────────────────────────────────────────────── */
@@ -162,6 +162,75 @@ typedef struct {
     uint64_t history_retention_epochs;
     uint64_t earliest_retained_epoch;
 } mongreldb_history_retention;
+
+/* Structural hybrid logical clock from durable recovery (0.64+). present is
+ * non-zero when the object was present and physical_micros was parsed. */
+typedef struct {
+    uint64_t physical_micros;
+    uint32_t logical;
+    uint32_t node_tiebreaker;
+    int present;
+} mongreldb_commit_hlc;
+
+/* Nested durable recovery payload on query status/cancel responses. Optional
+ * numeric/bool fields use a paired *_set flag (non-zero = present). String
+ * fields are client-owned NUL-terminated pointers valid until the next call
+ * on the same client (or NULL when absent). */
+typedef struct {
+    int committed;
+    int committed_set;
+    int64_t committed_statements;
+    int committed_statements_set;
+    uint64_t last_commit_epoch;
+    int last_commit_epoch_set;
+    const char *last_commit_epoch_text;
+    mongreldb_commit_hlc last_commit_hlc;
+    int64_t first_commit_statement_index;
+    int first_commit_statement_index_set;
+    int64_t last_commit_statement_index;
+    int last_commit_statement_index_set;
+    int64_t completed_statements;
+    int completed_statements_set;
+    int64_t statement_index;
+    int statement_index_set;
+    const char *serialization;
+    const char *serialization_state;
+    const char *terminal_state;
+} mongreldb_durable_outcome;
+
+/* Decoded GET /queries/{query_id} status for durable recovery (0.64+). String
+ * fields and nested durable/outcome string fields are client-owned until the
+ * next call on the same client. */
+typedef struct {
+    const char *query_id;
+    const char *status;
+    const char *state;
+    const char *server_state;
+    const char *terminal_state;
+    int committed;
+    int committed_set;
+    int64_t committed_statements;
+    int committed_statements_set;
+    uint64_t last_commit_epoch;
+    int last_commit_epoch_set;
+    const char *last_commit_epoch_text;
+    mongreldb_commit_hlc last_commit_hlc;
+    int64_t first_commit_statement_index;
+    int first_commit_statement_index_set;
+    int64_t last_commit_statement_index;
+    int last_commit_statement_index_set;
+    int64_t completed_statements;
+    int completed_statements_set;
+    int64_t statement_index;
+    int statement_index_set;
+    const char *cancel_outcome;
+    const char *cancellation_reason;
+    int retryable;
+    int retryable_set;
+    mongreldb_durable_outcome outcome;
+    mongreldb_durable_outcome durable;
+    int durable_set;
+} mongreldb_query_status;
 
 /* Column definition passed to mongreldb_create_table(). Column ids are stable
  * on-wire identifiers used everywhere else (cells, conditions, projection). */
@@ -454,6 +523,45 @@ MONGRELDB_C_API void mongreldb_result_free(mongreldb_result *result);
  * non-JSON) body is returned in *out_body (client-owned, NUL-terminated, valid
  * until the next call) when out_body is non-NULL. */
 MONGRELDB_C_API int mongreldb_sql(mongreldb_client *c, const char *sql, const char **out_body);
+
+/* ── SQL control / durable recovery (0.64+) ─────────────────────────────── */
+
+/* mongreldb_query_status_get fetches retained SQL execution status
+ * (GET /queries/{query_id}). Fills *out with structural fields including
+ * nested durable/outcome last_commit_hlc. Strings are valid until the next
+ * call on c. */
+MONGRELDB_C_API int mongreldb_query_status_get(mongreldb_client *c, const char *query_id,
+                                               mongreldb_query_status *out);
+
+/* Prefer nested durable, then outcome, then top-level last_commit_hlc.
+ * Returns a pointer into *status (or NULL if none present). */
+MONGRELDB_C_API const mongreldb_commit_hlc *
+mongreldb_query_status_commit_hlc(const mongreldb_query_status *status);
+
+/* Prefer nested durable/outcome serialization_state, then serialization.
+ * Returns a client-owned string or "" when absent. */
+MONGRELDB_C_API const char *
+mongreldb_query_status_serialization_state(const mongreldb_query_status *status);
+
+/* mongreldb_cancel_query requests cancellation of a running SQL query
+ * (POST /queries/{query_id}/cancel). Optional *out_body receives the raw JSON
+ * response body (client-owned, valid until next call). */
+MONGRELDB_C_API int mongreldb_cancel_query(mongreldb_client *c, const char *query_id,
+                                           const char **out_body);
+
+/* ── Text retrieve (ANN, 0.64+) ─────────────────────────────────────────── */
+
+/* mongreldb_retrieve_text embeds text under the active semantic identity for
+ * embedding_column and runs ANN retrieval (POST /kit/retrieve_text).
+ * k <= 0 omits the k field (server default). *out_body receives the raw JSON
+ * body with hits/provenance (client-owned, valid until next call) when
+ * non-NULL. */
+MONGRELDB_C_API int mongreldb_retrieve_text(mongreldb_client *c,
+                                            const char *table,
+                                            int64_t embedding_column,
+                                            const char *text,
+                                            int64_t k,
+                                            const char **out_body);
 
 /* ── Schema ────────────────────────────────────────────────────────────── */
 
