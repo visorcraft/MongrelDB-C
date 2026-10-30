@@ -76,7 +76,7 @@ extern "C" {
 
 #define MONGRELDB_C_VERSION_MAJOR 0
 #define MONGRELDB_C_VERSION_MINOR 65
-#define MONGRELDB_C_VERSION_PATCH 0
+#define MONGRELDB_C_VERSION_PATCH 1
 
 /* ── Error codes ────────────────────────────────────────────────────────── */
 /*
